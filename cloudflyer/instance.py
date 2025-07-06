@@ -1,14 +1,21 @@
 from datetime import datetime, timedelta
 import logging
 import os
+import socket
+from threading import Event
 import time
 from urllib.parse import urlparse
 from importlib import resources
+import urllib3
+
+# Disable InsecureRequestWarning
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 from cachetools import TTLCache
 from mitmproxy.http import HTTPFlow, Response
 from DrissionPage import ChromiumPage, ChromiumOptions
 from DrissionPage.errors import PageDisconnectedError
+import requests
 
 from .mitm import MITMProxy
 from .utils import get_free_port
@@ -75,6 +82,11 @@ class MITMAddon:
     def __init__(self) -> None:
         self.url_cache = TTLCache(maxsize=10000, ttl=timedelta(hours=1).total_seconds())
         self.reset()
+        self.ready = Event()
+        
+    def running(self):
+        logger.debug("MITM addon is ready to handle.")
+        self.ready.set()
         
     def reset(self):
         self.cloudflare_challenge_target_host = None
@@ -85,13 +97,49 @@ class MITMAddon:
         self.turnstile_site_key = None
         self.user_agent = None
         self.result = None
+        
+    def http_connect(self, flow: HTTPFlow):
+        # Use better IP for chinese users
+        host = flow.request.host
+        if host == "challenges.cloudflare.com":
+            ip = socket.gethostbyname("challenges.cf.cname.vvhan.com")
+            port = flow.request.port
+            flow.request.host = ip
+            flow.request.authority = f"{ip}:{port}"
+            flow.server_conn.sni = host
+            logger.debug(f"CONNECT IP override {host} -> {ip}")
     
-    def requestheader(self, flow: HTTPFlow):
+    def requestheaders(self, flow: HTTPFlow):
         # Modify request UA
         if self.user_agent:
             flow.request.headers["User-Agent"] = self.user_agent
+            
+        if any(i in flow.request.pretty_url for i in [
+            'android.clients.google.com',
+            'optimizationguide-pa.googleapis.com',
+            'clients2.google.com',
+            'safebrowsingohttpgateway.googleapis.com',
+            'clientservices.googleapis.com',
+        ]):
+            flow.response = Response.make(
+                404,
+                b"CloudFlyer blocked chrome updates and other resources.",
+                {"Content-Type": "text/plain"}
+            )
+            return
     
     def request(self, flow: HTTPFlow):
+        # Use better IP for chinese users
+        host = flow.request.host
+        if host == "challenges.cloudflare.com":
+            ip = socket.gethostbyname("challenges.cf.cname.vvhan.com")
+            flow.request.host = ip
+            # HTTP/1.1 host header keeps original host
+            flow.request.headers["Host"] = host
+            # HTTP/2 uses :authority
+            flow.request.authority = host
+            logger.debug(f"HTTP IP override {host} -> {ip}")
+        
         # Show turnstile solving page
         if self.turnstile_target_host and self.turnstile_target_host in flow.request.pretty_host:
             flow.response = Response.make(
@@ -102,7 +150,15 @@ class MITMAddon:
             logger.debug("Returning turnstile html using MITM.")
         
         # Show index page
-        if 'internals.cloudflyer.com/index' in flow.request.pretty_url:
+        elif 'internals.cloudflyer.com/ready' in flow.request.pretty_url:
+            flow.response = Response.make(
+                200,
+                b"OK",
+                {"Content-Type": "text/plain"},
+            )
+        
+        # Show index page
+        elif 'internals.cloudflyer.com/index' in flow.request.pretty_url:
             flow.response = Response.make(
                 200,
                 self._get_index_html().encode(),
@@ -131,6 +187,11 @@ class MITMAddon:
             cached_response = self.url_cache[flow.request.pretty_url]
             flow.response = cached_response
             logger.debug(f"Replayed cached response for: {flow.request.pretty_url}")
+            
+        if not flow.response:
+            logger.debug(f"MITM caught and continue request to: {flow.request.pretty_url}")
+        else:
+            logger.debug(f"MITM caught and provided response for: {flow.request.pretty_url}")
     
     def responseheaders(self, flow: HTTPFlow):
         # Block certain resource
@@ -140,7 +201,7 @@ class MITMAddon:
             if content_length > 30 * 1024 * 1024:  # 30MB in bytes
                 flow.response = Response.make(
                     404,
-                    b"CloudFlyer Stopped large file",
+                    b"CloudFlyer blocked large file",
                     {"Content-Type": "text/plain"}
                 )
                 return
@@ -154,7 +215,7 @@ class MITMAddon:
             if any(btype in content_type.lower() for btype in blocked_types):
                 flow.response = Response.make(
                     404,
-                    b"CloudFlyer Stopped media",
+                    b"CloudFlyer blocked media",
                     {"Content-Type": "text/plain"}
                 )
         
@@ -182,6 +243,13 @@ class MITMAddon:
                 else:
                     if '<body class="no-js">' in content:
                         script = content.split('<body class="no-js">')[1].split("</body>")[0]
+                        flow.response = Response.make(
+                            200,
+                            self._get_cloudflare_challenge_html(script).encode(),
+                            {"Content-Type": "text/html"},
+                        )
+                    elif '<title>Just a moment...</title>' in content:
+                        script = content.split('<body>')[1].split("</body>")[0]
                         flow.response = Response.make(
                             200,
                             self._get_cloudflare_challenge_html(script).encode(),
@@ -224,13 +292,17 @@ class Instance:
     def start(self):
         # Initialize driver with MITM proxy
         self.mitm.start()
+        if not self.addon.ready.wait(timeout=10):
+            raise RuntimeError("MITM proxy failed to start.")
         options = ChromiumOptions().auto_port()
         options.set_paths(browser_path=self.browser_path)
         options.ignore_certificate_errors(True)
         for argument in self.arguments:
             options.set_argument(argument)
         options.set_proxy(f"http://127.0.0.1:{self.mitm_port}")
-        self.driver = ChromiumPage(addr_or_opts=options)
+        options.set_retry(20, 0.5)
+        self.driver = ChromiumPage(addr_or_opts=options, timeout=0.5)
+        logger.debug("ChromiumPage driver initialized with MITM proxy.")
         self.driver.get('https://internals.cloudflyer.com/index')
 
     def stop(self):
@@ -330,8 +402,15 @@ class Instance:
                     self.addon.recaptcha_site_key = task.get("siteKey", "")
                     self.addon.recaptcha_action = task.get("action", "")
                 self.addon.recaptcha_invisible_target_host = urlparse(task["url"]).hostname
-            else:
+            elif task["type"] == "CloudflareChallenge":
                 self.addon.cloudflare_challenge_target_host = urlparse(task["url"]).hostname
+            else:
+                return {
+                    "success": False,
+                    "code": 500,
+                    "error": f"Unknown task type '{task['type']}'.",
+                    "data": task,
+                }
             
             if not self.driver.get(task["url"], timeout=timeout):
                 return {
@@ -342,36 +421,36 @@ class Instance:
                     "data": task,
                 }
             
-            cf_bypasser = CloudflareBypasser(self.driver, max_retries=8)
+            cf_bypasser = CloudflareBypasser(self.driver)
             response = None
             if task["type"] == "Turnstile":
                 try_count = 0
                 while self.driver:
-                    if 0 < cf_bypasser.max_retries + 1 <= try_count:
-                        logger.info("Exceeded maximum retries. Bypass failed.")
-                        response = None
-                        error = "Timeout to solve the turnstile, please retry later."
-                        break
                     if (datetime.now() - start_time).total_seconds() > timeout:
                         logger.info("Exceeded maximum time. Bypass failed.")
                         response = None
                         error = "Timeout to solve the turnstile, please retry later."
                         break
-                    logger.debug(f"Attempt {try_count + 1}: Trying to click turnstile...")
-                    cf_bypasser.click_verification_button()
-                    for _ in range(100):
-                        token = self.addon.result
-                        if token:
-                            break
-                        else:
-                            time.sleep(0.1)
+                    
+                    # Check for token first before any other operations
+                    token = self.addon.result
                     if token:
                         response = {
                             "token": token
                         }
+                        logger.debug("Successfully obtained turnstile token.")
                         break
+                        
+                    try:
+                        if try_count % 5 == 0:
+                            logger.debug(f"Attempt {int(try_count / 5 + 1)}: Trying to click turnstile...")
+                            cf_bypasser.click_verification_button()
+                    except Exception as e:
+                        logger.warning(f"Error clicking verification button: {str(e)}")
+                        # Don't break here, continue to check for token
+                        
                     try_count += 1
-                    time.sleep(2)
+                    time.sleep(0.1)
             elif task["type"] == "RecaptchaInvisible":
                 while self.driver:
                     if (datetime.now() - start_time).total_seconds() > timeout:

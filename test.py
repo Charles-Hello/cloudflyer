@@ -172,16 +172,26 @@ def main_cli():
     for cmd in ["turnstile", "cloudflare", "recaptcha"]:
         parser_cmd = subparsers.add_parser(cmd, help=f"Solve {cmd.replace('_', ' ')} challenge")
         parser_cmd.add_argument("-x", "--proxy", help="Proxy in format scheme://host:port (e.g., socks5://127.0.0.1:1080)")
+        parser_cmd.add_argument("-v", "--verbose", help="Show verbose output", action="store_true")
 
     args = parser.parse_args()
-
-    # 如果没有提供子命令，显示帮助信息并退出
+    
     if not args.command:
         parser.print_help()
         return
 
     # Parse proxy string if provided
     proxy = parse_proxy_string(args.proxy) if args.proxy else None
+    
+    if args.verbose:
+        apply_logging_adapter([
+            ('http.*->.*', logging.DEBUG),
+            ('server disconnect', logging.DEBUG),
+            ('client disconnect', logging.DEBUG),
+            ('server connect', logging.DEBUG),
+            ('client connect', logging.DEBUG),
+        ], level=10)
+        logging.getLogger('hpack').setLevel(logging.WARNING)
 
     # Execute corresponding function based on command
     try:

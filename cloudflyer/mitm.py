@@ -73,6 +73,7 @@ class MITMProxy:
         ctx.options.flow_detail = 0
         ctx.options.termlog_verbosity = "error"
         ctx.options.upstream_auth = self._upstream_auth
+        ctx.options.connection_strategy = "lazy"
         if self._username and self._password:
             ctx.options.proxyauth = f"{self._username}:{self._password}"
         self._running = True
@@ -81,7 +82,26 @@ class MITMProxy:
     def start(self):
         """Start proxy in a separate thread"""
         def run_in_thread():
+            # On Windows, the default ProactorEventLoop has been known to raise sporadic
+            # `OSError: [WinError 64]` errors when a client aborts a connection right
+            # after it has been accepted. These errors are harmless for our MITM use
+            # case but they bubble up as *unhandled* and may break the proxy loop or
+            # flood the logs.  Switching to the classic SelectorEventLoop gets rid of
+            # this Windows-specific issue.  We only do this inside the proxy thread so
+            # it does not affect the rest of the application.
+            if hasattr(asyncio, "WindowsSelectorEventLoopPolicy"):
+                asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+            # Provide a custom exception handler that silences the spurious WinError 64
+            # while keeping the default behaviour for everything else.
+            def _ignore_winerror_64(loop, context):
+                exc = context.get("exception")
+                if isinstance(exc, OSError) and getattr(exc, "winerror", None) == 64:
+                    logger.debug("Ignored WinError 64 — the network name is no longer available.")
+                    return  # swallow the error silently
+                loop.default_exception_handler(context)
+
             self._loop = asyncio.new_event_loop()
+            self._loop.set_exception_handler(_ignore_winerror_64)
             asyncio.set_event_loop(self._loop)
             self._loop.run_until_complete(self._run_proxy())
 

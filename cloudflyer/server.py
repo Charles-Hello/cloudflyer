@@ -105,6 +105,10 @@ def main(argl: List[str] = None, ready: threading.Event = None, log: bool = True
     if log:
         apply_logging_adapter([
             ('http.*->.*', logging.DEBUG),
+            ('server disconnect', logging.DEBUG),
+            ('client disconnect', logging.DEBUG),
+            ('server connect', logging.DEBUG),
+            ('client connect', logging.DEBUG),
         ], level=10)
         logging.getLogger('hpack').setLevel(logging.WARNING)
     

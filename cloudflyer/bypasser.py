@@ -2,6 +2,7 @@ import time
 import logging
 
 from DrissionPage import ChromiumPage
+from DrissionPage.items import ChromiumElement
 from DrissionPage.errors import PageDisconnectedError
 
 logger = logging.getLogger(__name__)
@@ -11,7 +12,7 @@ class CloudflareBypasser:
         self.driver = driver
         self.max_retries = max_retries
 
-    def search_recursively_shadow_root_with_iframe(self,ele):
+    def search_recursively_shadow_root_with_iframe(self, ele: ChromiumElement):
         if ele.shadow_root:
             if ele.shadow_root.child().tag == "iframe":
                 return ele.shadow_root.child()
@@ -22,7 +23,7 @@ class CloudflareBypasser:
                     return result
         return None
 
-    def search_recursively_shadow_root_with_cf_input(self,ele):
+    def search_recursively_shadow_root_with_cf_input(self, ele: ChromiumElement):
         if ele.shadow_root:
             if ele.shadow_root.ele("tag:input"):
                 return ele.shadow_root.ele("tag:input")
@@ -36,6 +37,7 @@ class CloudflareBypasser:
     def locate_cf_button(self):
         button = None
         eles = self.driver.eles("tag:input")
+        ele: ChromiumElement
         for ele in eles:
             if "name" in ele.attrs.keys() and "type" in ele.attrs.keys():
                 if "turnstile" in ele.attrs["name"] and ele.attrs["type"] == "hidden":
@@ -47,7 +49,7 @@ class CloudflareBypasser:
         else:
             # If the button is not found, search it recursively
             logger.info("Basic search failed. Searching for button recursively.")
-            ele = self.driver.ele("tag:body")
+            ele = self.driver.ele("tag:body", )
             iframe = self.search_recursively_shadow_root_with_iframe(ele)
             if iframe:
                 button = self.search_recursively_shadow_root_with_cf_input(iframe("tag:body"))
