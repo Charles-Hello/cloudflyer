@@ -10,8 +10,9 @@ from curl_cffi import requests
 from cloudflyer.log import apply_logging_adapter
 from cloudflyer.server import main, stop_instances
 
+CLIENT_KEY = "example_token"
 EXAMPLE_TOKEN = "example_token"
-
+BASE_URL = "http://127.0.0.1:3000"
 
 def verify_cloudflare_challenge(result):
     try:
@@ -37,7 +38,7 @@ def verify_cloudflare_challenge(result):
 
 def create_task(data):
     headers = {"Content-Type": "application/json"}
-    response = requests.post("http://127.0.0.1:3000/createTask", json=data, headers=headers)
+    response = requests.post(f"{BASE_URL}/createTask", json=data, headers=headers)
     return response.json()
 
 
@@ -47,7 +48,7 @@ def get_task_result(task_id, client_key=EXAMPLE_TOKEN):
     data = {"clientKey": client_key, "taskId": task_id}
 
     response = requests.post(
-        "http://localhost:3000/getTaskResult",
+        f"{BASE_URL}/getTaskResult",
         json=data,
         headers=headers,
     )
@@ -59,7 +60,7 @@ def start_server():
     t = Thread(
         target=main,
         kwargs={
-            "argl": ["-K", EXAMPLE_TOKEN],
+            "argl": ["-K", CLIENT_KEY],
             "ready": ready,
             "log": False,
         },
