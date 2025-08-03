@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 
 instance_pool = None
 tasks = TTLCache(maxsize=10000, ttl=timedelta(days=1).total_seconds())
+server_client_key = None
 
 class ProxyConfig(BaseModel):
     scheme: str
@@ -43,10 +44,13 @@ class CreateTaskRequest(BaseModel):
 
 class TaskResultRequest(BaseModel):
     clientKey: str
-    taskId: str
+    taskId: Optional[str] = None
 
 @app.post("/createTask")
 async def create_task(request: CreateTaskRequest):
+    if server_client_key and request.clientKey != server_client_key:
+        return {"error": "Invalid client key", "taskId": None}
+
     if request.type not in ["CloudflareChallenge", "RecaptchaInvisible", "Turnstile"]:
         raise HTTPException(status_code=400, detail="Unsupported task type")
     
@@ -70,13 +74,22 @@ async def create_task(request: CreateTaskRequest):
 
 @app.post("/getTaskResult")
 async def get_task_result(request: TaskResultRequest):
+    if server_client_key and request.clientKey != server_client_key:
+        return {
+            "status": "completed",
+            "result": {"error": "Invalid client key", "success": False},
+        }
+
     if request.taskId not in tasks:
-        raise HTTPException(status_code=404, detail="Task not found")
-    
+        return {
+            "status": "completed",
+            "result": {"error": "Task not found", "success": False},
+        }
+
     task = tasks[request.taskId]
     return {
         "status": task["status"],
-        "result": task["result"] if task["status"] == "completed" else None
+        "result": task["result"] if task["status"] == "completed" else None,
     }
     
 def stop_instances():
@@ -97,7 +110,7 @@ def process_task(task_id: str):
         task["status"] = "completed"
 
 def main(argl: List[str] = None, ready: threading.Event = None, log: bool = True):
-    global instance_pool
+    global instance_pool, server_client_key
     
     if argl is None:
         argl = sys.argv[1:]
@@ -121,6 +134,7 @@ def main(argl: List[str] = None, ready: threading.Event = None, log: bool = True
     parser.add_argument("-L", "--headless", action="store_true", help="Run browser in headless mode")
     
     args = parser.parse_args(argl)
+    server_client_key = args.clientKey
     
     if args.headless:
         from pyvirtualdisplay import Display

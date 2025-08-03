@@ -41,7 +41,7 @@ def create_task(data):
     return response.json()
 
 
-def get_task_result(task_id, client_key="123456"):
+def get_task_result(task_id, client_key=EXAMPLE_TOKEN):
     headers = {"Content-Type": "application/json"}
 
     data = {"clientKey": client_key, "taskId": task_id}
@@ -70,9 +70,9 @@ def start_server():
     return t
 
 
-def poll_task_result(task_id) -> dict:
+def poll_task_result(task_id, client_key) -> dict:
     while True:
-        cf_response = get_task_result(task_id)
+        cf_response = get_task_result(task_id, client_key)
         if cf_response["status"] == "completed":
             return cf_response["result"]
         time.sleep(3)
@@ -93,7 +93,7 @@ def cloudflare_challenge(proxy=None):
         data["proxy"] = proxy
 
     task_info = create_task(data)
-    result = poll_task_result(task_info["taskId"])
+    result = poll_task_result(task_info["taskId"], data["clientKey"])
     print(f"Challenge result:\n{json.dumps(result, indent=2)}")
 
     success = verify_cloudflare_challenge(result)
@@ -117,7 +117,7 @@ def turnstile(proxy=None):
     print("Task:")
     print(json.dumps(data, indent=2))
     task_info = create_task(data)
-    result = poll_task_result(task_info["taskId"])
+    result = poll_task_result(task_info["taskId"], data["clientKey"])
     print(f"Turnstile result:\n{json.dumps(result, indent=2)}")
 
 
@@ -145,7 +145,7 @@ def recapcha_invisible(proxy=None):
         data["proxy"] = proxy
 
     task_info = create_task(data)
-    result = poll_task_result(task_info["taskId"])
+    result = poll_task_result(task_info["taskId"], data["clientKey"])
     print(f"Challenge result:\n{json.dumps(result, indent=2)}")
 
 def parse_proxy_string(proxy_str):
