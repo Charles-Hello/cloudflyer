@@ -1,3 +1,4 @@
+import asyncio
 from datetime import datetime, timedelta
 import logging
 import os
@@ -318,7 +319,7 @@ class Instance:
 
     def task_main(self, task: dict, timeout: float):
         try:
-            return self._task_main(task, timeout=timeout)
+            return asyncio.run(self._task_main(task, timeout=timeout))
         except Exception as e:
             if isinstance(e, PageDisconnectedError):
                 reason = "Timeout to solve the captcha, maybe you have set up the wrong proxy, or you are using a risky network, or the server is not operational."
@@ -334,45 +335,54 @@ class Instance:
             except (AttributeError, PageDisconnectedError):
                 pass
 
-    def _task_main(self, task: dict, timeout: float):
+    async def _task_main(self, task: dict, timeout: float):
         start_time = datetime.now()
         self.addon.reset()
+        
+        # Clear browser state
+        self.driver.clear_cache()
         
         # Ensure URL starts with http:// or https://
         if not task["url"].startswith(("http://", "https://")):
             task["url"] = "http://" + task["url"]
 
         proxy = task.get("proxy")
-        wssocks = None
+        wssocks = task.get("wssocks")
+
         if proxy and isinstance(proxy, dict):
-            self.mitm.update_proxy(proxy)
-        else:
-            wssocks = task.get("wssocks")
-            if wssocks and isinstance(wssocks, dict):
-                wssocks_url = wssocks.get("url", None)
-                wssocks_token = wssocks.get("token", None)
-                if wssocks_url and wssocks_token:
-                    from .wssocks import WSSocks
-                    
-                    wssocks = WSSocks()
-                    port = get_free_port()
-                    if not wssocks.start(wssocks_token, wssocks_url, port):
-                        return {
-                            "success": False,
-                            "code": 500,
-                            "response": None,
-                            "error": "Fail to connect to the wssocks proxy.",
-                            "data": task,
-                        }
-                    self.mitm.update_proxy({"scheme": "socks5", "host": "127.0.0.1", "port": port})
-                else:
+            logger.info(f"Task will be executed using proxy: {proxy}")
+            await self.mitm.update_proxy(proxy)
+        elif wssocks and isinstance(wssocks, dict):
+            wssocks_url = wssocks.get("url", None)
+            wssocks_token = wssocks.get("token", None)
+            if wssocks_url and wssocks_token:
+                from .wssocks import WSSocks
+                
+                wssocks = WSSocks()
+                port = get_free_port()
+                if not wssocks.start(wssocks_token, wssocks_url, port):
                     return {
                         "success": False,
                         "code": 500,
                         "response": None,
-                        "error": "Either wssocks.url or wssocks.token is not provided.",
+                        "error": "Fail to connect to the wssocks proxy.",
                         "data": task,
                     }
+                
+                proxy_config = {"scheme": "socks5", "host": "127.0.0.1", "port": port}
+                logger.info(f"Task will be executed using wssocks proxy: {proxy_config}")
+                await self.mitm.update_proxy(proxy_config)
+            else:
+                return {
+                    "success": False,
+                    "code": 500,
+                    "response": None,
+                    "error": "Either wssocks.url or wssocks.token is not provided.",
+                    "data": task,
+                }
+        else:
+            logger.info("Task will be executed without proxy.")
+            await self.mitm.update_proxy(None)
                     
         self.addon.user_agent = task.get("userAgent", None)
         
