@@ -7,3 +7,4 @@ mitmproxy==11.0.2
 pproxy==2.7.9
 cachetools
 loguru
+httpx[socks]

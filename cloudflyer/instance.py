@@ -19,7 +19,7 @@ from DrissionPage.errors import PageDisconnectedError
 import requests
 
 from .mitm import MITMProxy
-from .utils import get_free_port
+from .utils import get_free_port, test_proxy
 from .bypasser import CloudflareBypasser
 from . import html as html_res
 
@@ -347,6 +347,19 @@ class Instance:
             task["url"] = "http://" + task["url"]
 
         proxy = task.get("proxy")
+        if proxy:
+            try:
+                logger.info(f"Testing proxy: {proxy}")
+                await test_proxy(proxy)
+                logger.info(f"Proxy test successful: {proxy}")
+            except Exception as e:
+                logger.error(f"Proxy test failed for {proxy}: {e}")
+                return {
+                    "success": False,
+                    "code": 500,
+                    "error": f"Proxy connection failed: {e}",
+                    "data": task,
+                }
         wssocks = task.get("wssocks")
 
         if proxy and isinstance(proxy, dict):
