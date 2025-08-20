@@ -128,12 +128,13 @@ class MITMProxy:
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.stop()
 
-    def update_proxy(self, proxy_config=None):
+    async def update_proxy(self, proxy_config=None):
         """Update upstream proxy configuration"""
         if self._loop:
-            self._loop.call_soon_threadsafe(lambda: self._dynamic_proxy.set_upstream_proxy(proxy_config))
+            future = asyncio.run_coroutine_threadsafe(self._dynamic_proxy.set_upstream_proxy(proxy_config), self._loop)
+            future.result()  # Wait for the coroutine to finish
         else:
-            self._dynamic_proxy.set_upstream_proxy(proxy_config)
+            await self._dynamic_proxy.set_upstream_proxy(proxy_config)
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)

@@ -56,14 +56,16 @@ docker run -it --rm -p 3000:3000 jackzzs/cloudflyer -K YOUR_CLIENT_KEY
 Docker Compose:
 
 ```yaml
-version: 3
 services:
   cloudflyer:
-    image: jackzzs/cloudflyer
+    build: .
+    image: cloudflyer:latest
     container_name: cloudflyer
-    restart: unless-stopped
     ports:
       - 3000:3000
+    command: >
+      -K "YOUR_API_KEY" 
+      -H "0.0.0.0"
 ```
 
 ## API Endpoints for Server

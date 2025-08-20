@@ -10,8 +10,9 @@ from curl_cffi import requests
 from cloudflyer.log import apply_logging_adapter
 from cloudflyer.server import main, stop_instances
 
+CLIENT_KEY = "example_token"
 EXAMPLE_TOKEN = "example_token"
-
+BASE_URL = "http://127.0.0.1:3000"
 
 def verify_cloudflare_challenge(result):
     try:
@@ -37,17 +38,17 @@ def verify_cloudflare_challenge(result):
 
 def create_task(data):
     headers = {"Content-Type": "application/json"}
-    response = requests.post("http://127.0.0.1:3000/createTask", json=data, headers=headers)
+    response = requests.post(f"{BASE_URL}/createTask", json=data, headers=headers)
     return response.json()
 
 
-def get_task_result(task_id, client_key="123456"):
+def get_task_result(task_id, client_key=EXAMPLE_TOKEN):
     headers = {"Content-Type": "application/json"}
 
     data = {"clientKey": client_key, "taskId": task_id}
 
     response = requests.post(
-        "http://localhost:3000/getTaskResult",
+        f"{BASE_URL}/getTaskResult",
         json=data,
         headers=headers,
     )
@@ -59,7 +60,7 @@ def start_server():
     t = Thread(
         target=main,
         kwargs={
-            "argl": ["-K", EXAMPLE_TOKEN],
+            "argl": ["-K", CLIENT_KEY],
             "ready": ready,
             "log": False,
         },
@@ -70,9 +71,9 @@ def start_server():
     return t
 
 
-def poll_task_result(task_id) -> dict:
+def poll_task_result(task_id, client_key) -> dict:
     while True:
-        cf_response = get_task_result(task_id)
+        cf_response = get_task_result(task_id, client_key)
         if cf_response["status"] == "completed":
             return cf_response["result"]
         time.sleep(3)
@@ -93,7 +94,7 @@ def cloudflare_challenge(proxy=None):
         data["proxy"] = proxy
 
     task_info = create_task(data)
-    result = poll_task_result(task_info["taskId"])
+    result = poll_task_result(task_info["taskId"], data["clientKey"])
     print(f"Challenge result:\n{json.dumps(result, indent=2)}")
 
     success = verify_cloudflare_challenge(result)
@@ -117,7 +118,7 @@ def turnstile(proxy=None):
     print("Task:")
     print(json.dumps(data, indent=2))
     task_info = create_task(data)
-    result = poll_task_result(task_info["taskId"])
+    result = poll_task_result(task_info["taskId"], data["clientKey"])
     print(f"Turnstile result:\n{json.dumps(result, indent=2)}")
 
 
@@ -145,7 +146,7 @@ def recapcha_invisible(proxy=None):
         data["proxy"] = proxy
 
     task_info = create_task(data)
-    result = poll_task_result(task_info["taskId"])
+    result = poll_task_result(task_info["taskId"], data["clientKey"])
     print(f"Challenge result:\n{json.dumps(result, indent=2)}")
 
 def parse_proxy_string(proxy_str):
