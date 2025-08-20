@@ -69,7 +69,10 @@ class CloudflareBypasser:
         except Exception as e:
             if isinstance(e, PageDisconnectedError):
                 raise
-            logger.warning(f"Error clicking verification button: {e}")
+            logger.error(f"Error clicking verification button: {type(e).__name__}: {e}")
+            logger.error(f"Exception details: {repr(e)}")
+            import traceback
+            logger.error(f"Full traceback:\n{traceback.format_exc()}")
 
     def is_bypassed(self):
         try:

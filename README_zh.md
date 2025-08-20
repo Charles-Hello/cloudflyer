@@ -1,67 +1,66 @@
 # Cloudflyer
 
-Cloudflyer is a Python service that helps solve various web security challenges including Cloudflare challenges, Turnstile captchas, and reCAPTCHA Invisible.
+Cloudflyer 是一个 Python 服务，用于解决各种网络安全挑战，包括 Cloudflare 挑战、Turnstile 验证码和 reCAPTCHA Invisible。
 
-[Chinese README / 中文文档](README_zh.md)
+[中文文档 / Chinese README](README_zh.md)
 
-## Features
+## 功能特性
 
-- Cloudflare challenge solver
-- Turnstile captcha solver
-- reCAPTCHA Invisible solver
-- Proxy support (HTTP/SOCKS)
-- Concurrent task processing
-- RESTful API server
+- Cloudflare 挑战解决器
+- Turnstile 验证码解决器
+- reCAPTCHA Invisible 解决器
+- 代理支持 (HTTP/SOCKS)
+- 并发任务处理
+- RESTful API 服务器
 
-## Installation
+## 安装
 
 ```bash
 pip install cloudflyer
 ```
 
-## Quick Start
+## 快速开始
 
-### Example Script
+### 示例脚本
 
 ```bash
-# Run example cloudflare solving with proxy
+# 使用代理运行 Cloudflare 解决示例
 python test.py cloudflare -x socks5://127.0.0.1:1080
 
-# Run example turnstile solving
+# 运行 Turnstile 解决示例
 python test.py turnstile
 
-# Run example recaptcha invisible solving
+# 运行 reCAPTCHA Invisible 解决示例
 python test.py recaptcha
 ```
 
-### Solver Server
+### 解决器服务器
 
 ```bash
 cloudflyer -K YOUR_CLIENT_KEY
 ```
 
-Options:
-- `-K, --clientKey`: Client API key (required). This is a secret string you define yourself—**not something issued by Cloudflare or any third-party service**—and it must also be supplied in every API call (in the `clientKey` field) so the server can authenticate and process the request.
-- `-M, --maxTasks`: Maximum concurrent tasks (default: 1)
-- `-P, --port`: Server listen port (default: 3000)
-- `-H, --host`: Server listen host (default: localhost)
-- `-T, --timeout`: Maximum task timeout in seconds (default: 120)
+选项：
+- `-K, --clientKey`：客户端 API 密钥（必需）。这是你自己定义的秘密字符串——**不是 Cloudflare 或任何第三方服务签发的**——必须在每个 API 调用中（在 `clientKey` 字段中）提供，以便服务器可以进行身份验证和处理请求。
+- `-M, --maxTasks`：最大并发任务数（默认：1）
+- `-P, --port`：服务器监听端口（默认：3000）
+- `-H, --host`：服务器监听主机（默认：localhost）
+- `-T, --timeout`：最大任务超时时间（秒）（默认：120）
 
 ### Docker
 
-Docker:
+Docker：
 
 ```bash
 docker run -it --rm -p 3000:3000 jackzzs/cloudflyer -K YOUR_CLIENT_KEY
 ```
 
-Docker Compose:
+Docker Compose：
 
 ```yaml
 services:
   cloudflyer:
-    build: .
-    image: cloudflyer:latest
+    image: jackzzs/cloudflyer
     container_name: cloudflyer
     ports:
       - 3000:3000
@@ -70,11 +69,11 @@ services:
       -H "0.0.0.0"
 ```
 
-## API Endpoints for Server
+## 服务器 API 端点
 
-### Create Task
+### 创建任务
 
-Request:
+请求：
 
 ```
 POST /createTask
@@ -94,13 +93,13 @@ Content-Type: application/json
 }
 ```
 
-1. Field `userAgent` and `proxy` is optional.
-2. Supported task types: `CloudflareChallenge`, `Turnstile`, `RecaptchaInvisible`
-3. For `Turnstile` task, `siteKey` is required.
-4. For `RecaptchaInvisible` task, `siteKey` and `action` is required.
-5. For `CloudflareChallenge` task, set `content` to true to get page html in `response`.
+1. 字段 `userAgent` 和 `proxy` 是可选的。
+2. 支持的任务类型：`CloudflareChallenge`、`Turnstile`、`RecaptchaInvisible`
+3. 对于 `Turnstile` 任务，需要 `siteKey`。
+4. 对于 `RecaptchaInvisible` 任务，需要 `siteKey` 和 `action`。
+5. 对于 `CloudflareChallenge` 任务，将 `content` 设置为 true 以在 `response` 中获取页面 html。
 
-Response:
+响应：
 
 ```
 {
@@ -108,9 +107,9 @@ Response:
 }
 ```
 
-### Get Task Result
+### 获取任务结果
 
-Request:
+请求：
 
 ```
 POST /getTaskResult
@@ -121,7 +120,7 @@ Content-Type: application/json
 }
 ```
 
-Response:
+响应：
 
 ```
 {
@@ -140,7 +139,7 @@ Response:
 }
 ```
 
-For `Turnstile` task:
+对于 `Turnstile` 任务：
 
 ```
 "response": {
@@ -148,7 +147,7 @@ For `Turnstile` task:
 }
 ```
 
-For `CloudflareChallenge` tasks:
+对于 `CloudflareChallenge` 任务：
 
 ```
 "response": {
@@ -162,7 +161,7 @@ For `CloudflareChallenge` tasks:
 }
 ```
 
-For `RecaptchaInvisible` tasks:
+对于 `RecaptchaInvisible` 任务：
 
 ```
 "response": {
@@ -172,21 +171,21 @@ For `RecaptchaInvisible` tasks:
 
 ## LinkSocks
 
-[LinkSocks](https://github.com/linksocks/linksocks) is a socks proxy agent for intranet penetration via websocket. It can be used for connecting to the user's network.
+[LinkSocks](https://github.com/linksocks/linksocks) 是一个通过 websocket 进行内网穿透的 socks 代理代理。它可以用于连接到用户的网络。
 
-For agent proxy:
+对于代理端：
 
 ```bash
 linksocks server -r -t example_token -a -dd
 ```
 
-For user side (using proxy):
+对于用户端（使用代理）：
 
 ```bash
 linksocks client -u https://ws.zetx.tech -r -t example_token -T 1 -c example_connector_token -dd -E -x socks5://127.0.0.1:1080
 ```
 
-For solver side:
+对于解决器端：
 
 ```
 POST /createTask

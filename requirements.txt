@@ -2,8 +2,9 @@ fastapi
 pydantic==2.7.4
 uvicorn
 PyVirtualDisplay
-DrissionPage==4.0.5.6
+DrissionPage==4.1.1.2
 mitmproxy==11.0.2
 pproxy==2.7.9
 cachetools
 loguru
+appdirs

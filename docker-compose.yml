@@ -1,0 +1,10 @@
+services:
+  cloudflyer:
+    build: .
+    image: cloudflyer:latest
+    container_name: cloudflyer
+    ports:
+      - "3000:3000"
+    command: >
+      -K "YOUR_API_KEY" 
+      -H "0.0.0.0"

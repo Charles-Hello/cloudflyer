@@ -56,9 +56,15 @@ COPY . .
 # Install Python dependencies in venv
 RUN /app/venv/bin/pip install -e .
 
-# Download wssocks and make it executable
-RUN wget https://github.com/zetxtech/wssocks/releases/download/v1.4.2/wssocks-linux-amd64 -O /app/wssocks && \
-    chmod +x /app/wssocks
+# Download linksocks
+RUN set -eux; \
+    wget -O /app/linksocks https://github.com/linksocks/linksocks/releases/latest/download/linksocks-linux-amd64 && \
+    chmod +x /app/linksocks
+
+# Download linksocks
+RUN set -eux; \
+    wget -O /app/hazetunnel https://github.com/zetxtech/hazetunnel/releases/download/v3.1.0/hazetunnel-linux-amd64 && \
+    chmod +x /app/hazetunnel
 
 # Expose the port for the FastAPI server
 EXPOSE 3000

@@ -1,21 +1,24 @@
+import asyncio
 from datetime import datetime, timedelta
 import logging
 import os
+from pathlib import Path
 import socket
 from threading import Event
 import time
 from urllib.parse import urlparse
 from importlib import resources
+import platform
 import urllib3
 
 # Disable InsecureRequestWarning
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
+import appdirs
 from cachetools import TTLCache
 from mitmproxy.http import HTTPFlow, Response
 from DrissionPage import ChromiumPage, ChromiumOptions
 from DrissionPage.errors import PageDisconnectedError
-import requests
 
 from .mitm import MITMProxy
 from .utils import get_free_port
@@ -24,14 +27,10 @@ from . import html as html_res
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_ARGUMENTS = [
+COMMON_ARGUMENTS = [
     "-no-first-run",
     "-force-color-profile=srgb",
     "-metrics-recording-only",
-    "-password-store=basic",
-    "-use-mock-keychain",
-    "-export-tagged-pdf",
-    "-no-default-browser-check",
     "-disable-background-mode",
     "-enable-features=NetworkService,NetworkServiceInProcess,LoadCryptoTokenExtension,PermuteTLSExtensions",
     "-disable-features=FlashDeprecationWarning,EnablePasswordsAccountStorage",
@@ -46,8 +45,19 @@ DEFAULT_ARGUMENTS = [
     "--lang=en",
 ]
 
+NON_HEADLESS_ARGUMENTS = [
+    "-password-store=basic",
+    "-use-mock-keychain",
+    "-export-tagged-pdf",
+    "-no-default-browser-check",
+]
+
+DEFAULT_ARGUMENTS = COMMON_ARGUMENTS + NON_HEADLESS_ARGUMENTS
+
+HEADLESS_ARGUMENTS = COMMON_ARGUMENTS
+
 DEFAULT_BROWSER_PATH = os.getenv("CHROME_PATH", None)
-DEFAULT_CERT_PATH = os.getenv("CERT_PATH", "~/.mitmproxy")
+DEFAULT_CERT_PATH = Path(os.getenv("CERT_PATH", appdirs.user_data_dir("cloudflyer"))) / 'certs'
 
 class MITMAddon:
     index_html_templ: str = None
@@ -97,17 +107,6 @@ class MITMAddon:
         self.turnstile_site_key = None
         self.user_agent = None
         self.result = None
-        
-    def http_connect(self, flow: HTTPFlow):
-        # Use better IP for chinese users
-        host = flow.request.host
-        if host == "challenges.cloudflare.com":
-            ip = socket.gethostbyname("challenges.cf.cname.vvhan.com")
-            port = flow.request.port
-            flow.request.host = ip
-            flow.request.authority = f"{ip}:{port}"
-            flow.server_conn.sni = host
-            logger.debug(f"CONNECT IP override {host} -> {ip}")
     
     def requestheaders(self, flow: HTTPFlow):
         # Modify request UA
@@ -129,17 +128,15 @@ class MITMAddon:
             return
     
     def request(self, flow: HTTPFlow):
-        # Use better IP for chinese users
-        host = flow.request.host
-        if host == "challenges.cloudflare.com":
-            ip = socket.gethostbyname("challenges.cf.cname.vvhan.com")
-            flow.request.host = ip
-            # HTTP/1.1 host header keeps original host
-            flow.request.headers["Host"] = host
-            # HTTP/2 uses :authority
-            flow.request.authority = host
-            logger.debug(f"HTTP IP override {host} -> {ip}")
-        
+        # Remove "Headless" from User-Agent header
+        if "User-Agent" in flow.request.headers:
+            user_agent = flow.request.headers["User-Agent"]
+            if "Headless" in user_agent:
+                # Remove all instances of "Headless" from the User-Agent string
+                cleaned_user_agent = user_agent.replace("Headless", "")
+                flow.request.headers["User-Agent"] = cleaned_user_agent
+                logger.debug(f"Cleaned User-Agent: {user_agent} -> {cleaned_user_agent}")
+
         # Show turnstile solving page
         if self.turnstile_target_host and self.turnstile_target_host in flow.request.pretty_host:
             flow.response = Response.make(
@@ -196,28 +193,15 @@ class MITMAddon:
     def responseheaders(self, flow: HTTPFlow):
         # Block certain resource
         if flow.response.headers:
-            # Block large responses (>30MB)
+            # Block large responses (>5MB)
             content_length = int(flow.response.headers.get("Content-Length", "0"))
-            if content_length > 30 * 1024 * 1024:  # 30MB in bytes
+            if content_length > 5 * 1024 * 1024:  # 30MB in bytes
                 flow.response = Response.make(
                     404,
                     b"CloudFlyer blocked large file",
                     {"Content-Type": "text/plain"}
                 )
                 return
-
-            # Block medias
-            content_type = flow.response.headers.get("Content-Type", "")
-            blocked_types = [
-                "image/", "font/", "text/css",
-                "audio/", "video/", "application/font",
-            ]
-            if any(btype in content_type.lower() for btype in blocked_types):
-                flow.response = Response.make(
-                    404,
-                    b"CloudFlyer blocked media",
-                    {"Content-Type": "text/plain"}
-                )
         
         # Return error for challenge redirection to another host
         if self.cloudflare_challenge_target_host and self.cloudflare_challenge_target_host in flow.request.pretty_host:
@@ -255,7 +239,13 @@ class MITMAddon:
                             self._get_cloudflare_challenge_html(script).encode(),
                             {"Content-Type": "text/html"},
                         )
-        
+                    elif flow.response.headers.get("Content-Type", "") == 'text/html':
+                        flow.response = Response.make(
+                            200,
+                            self._get_cloudflare_challenge_html('<div class="title2">Cloudflare Solved</div>').encode(),
+                            {"Content-Type": "text/html"},
+                        )
+
         # Show recaptcha challenge solving page
         if self.recaptcha_invisible_target_host and self.recaptcha_invisible_target_host in flow.request.pretty_host:
             flow.response = Response.make(
@@ -273,13 +263,21 @@ class MITMAddon:
 class Instance:
     def __init__(
         self,
-        arguments: list = DEFAULT_ARGUMENTS,
+        arguments: list = None,
         browser_path: str = DEFAULT_BROWSER_PATH,
-        certdir: str = DEFAULT_CERT_PATH,
+        certdir: str = str(DEFAULT_CERT_PATH),
+        use_hazetunnel: bool = True,
+        headless: bool = False,
     ):
         self.browser_path = browser_path
         self.certdir = certdir
-        self.arguments = arguments
+        self.headless = headless
+        
+        # 根据headless模式选择合适的默认参数
+        if arguments is None:
+            self.arguments = HEADLESS_ARGUMENTS if headless else DEFAULT_ARGUMENTS
+        else:
+            self.arguments = arguments
         self.driver: ChromiumPage = None
         self.addon = MITMAddon()
         self.mitm_port = get_free_port()
@@ -287,16 +285,65 @@ class Instance:
             port=self.mitm_port,
             certdir=self.certdir,
             addons=[self.addon],
+            use_hazetunnel=use_hazetunnel,
         )
+        self.screencast_active = False
+        
+    def _start_screencast(self, screencast_path):
+        """启动录屏"""
+        try:
+            import os
+            os.makedirs(screencast_path, exist_ok=True)
+            
+            self.driver.screencast.set_save_path(screencast_path)
+            self.driver.screencast.set_mode.video_mode()
+            self.driver.screencast.start()
+            self.screencast_active = True
+            logger.info(f"Screencast started, saving to: {screencast_path}")
+            return True
+        except Exception as e:
+            logger.warning(f"Failed to start screencast: {e}")
+            self.screencast_active = False
+            return False
+    
+    def _stop_screencast(self, suffix="", task_type="unknown"):
+        """统一的录屏停止方法"""
+        if not self.screencast_active:
+            return None
+            
+        try:
+            if self.driver:
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                video_name = f"{task_type}_{timestamp}{suffix}.mp4"
+                screencast_file = self.driver.screencast.stop(video_name=video_name)
+                logger.info(f"Screencast saved to: {screencast_file}")
+                return screencast_file
+            else:
+                # Driver not available, just stop silently
+                return None
+        except Exception as e:
+            logger.debug(f"Failed to stop screencast: {e}")
+            return None
+        finally:
+            self.screencast_active = False
         
     def start(self):
         # Initialize driver with MITM proxy
         self.mitm.start()
-        if not self.addon.ready.wait(timeout=10):
+        # Check if MITM thread is still alive and wait for ready signal
+        for i in range(100):  # Check for 10 seconds total
+            if self.addon.ready.wait(timeout=0.1):
+                break
+            # If MITM thread died, don't wait anymore
+            if not self.mitm.thread.is_alive():
+                raise RuntimeError("MITM proxy failed to start.")
+        else:
             raise RuntimeError("MITM proxy failed to start.")
         options = ChromiumOptions().auto_port()
         options.set_paths(browser_path=self.browser_path)
         options.ignore_certificate_errors(True)
+        if self.headless:
+            options.headless(True)
         for argument in self.arguments:
             options.set_argument(argument)
         options.set_proxy(f"http://127.0.0.1:{self.mitm_port}")
@@ -306,6 +353,9 @@ class Instance:
         self.driver.get('https://internals.cloudflyer.com/index')
 
     def stop(self):
+        # Stop screencast first if active
+        self._stop_screencast(suffix="_shutdown")
+                
         try:
             if self.driver:
                 self.driver.quit()
@@ -318,8 +368,12 @@ class Instance:
 
     def task_main(self, task: dict, timeout: float):
         try:
-            return self._task_main(task, timeout=timeout)
+            return asyncio.run(self._task_main(task, timeout=timeout))
         except Exception as e:
+            # Stop screencast if it was active during exception
+            task_type = task.get("type", "unknown")
+            self._stop_screencast(suffix="_error", task_type=task_type)
+                    
             if isinstance(e, PageDisconnectedError):
                 reason = "Timeout to solve the captcha, maybe you have set up the wrong proxy, or you are using a risky network, or the server is not operational."
             else:
@@ -334,34 +388,41 @@ class Instance:
             except (AttributeError, PageDisconnectedError):
                 pass
 
-    def _task_main(self, task: dict, timeout: float):
+    async def _task_main(self, task: dict, timeout: float):
         start_time = datetime.now()
         self.addon.reset()
+        
+        # Clear browser state
+        self.driver.clear_cache()
+
+        # Setup screencast if enabled
+        screencast_path = task.get("screencast_path")
+        if screencast_path:
+            self._start_screencast(screencast_path)
         
         # Ensure URL starts with http:// or https://
         if not task["url"].startswith(("http://", "https://")):
             task["url"] = "http://" + task["url"]
 
         proxy = task.get("proxy")
-        wssocks = None
+        linksocks = None
         if proxy and isinstance(proxy, dict):
-            self.mitm.update_proxy(proxy)
+            await self.mitm.update_proxy(proxy)
         else:
-            wssocks = task.get("wssocks")
-            if wssocks and isinstance(wssocks, dict):
-                wssocks_url = wssocks.get("url", None)
-                wssocks_token = wssocks.get("token", None)
-                if wssocks_url and wssocks_token:
-                    from .wssocks import WSSocks
-                    
-                    wssocks = WSSocks()
+            linksocks = task.get("linksocks", None)
+            if linksocks and isinstance(linksocks, dict):
+                linksocks_url = linksocks.get("url", None)
+                linksocks_token = linksocks.get("token", None)
+                if linksocks_url and linksocks_token:
+                    from .linksocks import LinkSocks
+                    links = LinkSocks()
                     port = get_free_port()
-                    if not wssocks.start(wssocks_token, wssocks_url, port):
+                    if not links.start(linksocks_token, linksocks_url, port):
                         return {
                             "success": False,
                             "code": 500,
                             "response": None,
-                            "error": "Fail to connect to the wssocks proxy.",
+                            "error": "Fail to connect to the linksocks proxy.",
                             "data": task,
                         }
                     self.mitm.update_proxy({"scheme": "socks5", "host": "127.0.0.1", "port": port})
@@ -370,7 +431,7 @@ class Instance:
                         "success": False,
                         "code": 500,
                         "response": None,
-                        "error": "Either wssocks.url or wssocks.token is not provided.",
+                        "error": "Either linksocks.url or linksocks.token is not provided.",
                         "data": task,
                     }
                     
@@ -517,22 +578,35 @@ class Instance:
                     "error": f"Unknown task type '{task['type']}'.",
                     "data": task,
                 }
+            # Stop screencast if it was started
+            task_type = task.get("type", "unknown")
+            screencast_file = self._stop_screencast(task_type=task_type)
+                    
             if response:
-                return {
+                result = {
                     "success": True,
                     "code": 200,
                     "response": response,
                     "data": task,
                 }
+                if screencast_file:
+                    result["screencast_file"] = screencast_file
+                return result
             else:
-                return {
+                result = {
                     "success": False,
                     "code": 500,
                     "response": response,
                     "error": error,
                     "data": task,
                 }
+                if screencast_file:
+                    result["screencast_file"] = screencast_file
+                return result
     
         finally:
-            if wssocks:
-                wssocks.stop()
+            if linksocks:
+                try:
+                    links.stop()
+                except Exception:
+                    pass

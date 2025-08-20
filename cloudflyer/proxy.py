@@ -40,7 +40,7 @@ class DynamicProxy:
     def port(self):
         return self._port
 
-    def set_upstream_proxy(self, proxy_config: Optional[Dict[str, Any]] = None) -> None:
+    async def set_upstream_proxy(self, proxy_config: Optional[Dict[str, Any]] = None) -> None:
         """Set upstream proxy
 
         Args:
@@ -54,48 +54,35 @@ class DynamicProxy:
             }
             If None, clear proxy configuration
         """
-        if proxy_config is None:
-            if self._handler and self._proxy_str is not None:
+        new_proxy_str = None
+        if proxy_config:
+            scheme = proxy_config.get("scheme", "").lower()
+            host = proxy_config.get("host", "")
+            port = proxy_config.get("port", 0)
+            username = proxy_config.get("username")
+            password = proxy_config.get("password")
 
-                async def restart_server():
-                    await self.stop()
-                    self._proxy_str = None
-                    self._upstream_proxy = None
-                    await self.start()
+            if not all([scheme, host, port]):
+                raise ValueError("Incomplete proxy configuration")
 
-                asyncio.create_task(restart_server())
-            else:
-                self._proxy_str = None
-                self._upstream_proxy = None
+            new_proxy_str = f"{scheme}://{host}:{port}"
+            if username and password:
+                new_proxy_str += f"#{username}:{password}"
+
+        # Only proceed if proxy configuration has changed
+        if new_proxy_str == self._proxy_str:
+            logger.debug(f"Upstream proxy configuration unchanged: {self._proxy_str}")
             return
 
-        scheme = proxy_config.get("scheme", "").lower()
-        host = proxy_config.get("host", "")
-        port = proxy_config.get("port", 0)
-        username = proxy_config.get("username")
-        password = proxy_config.get("password")
+        logger.info(f"Upstream proxy changed from '{self._proxy_str}' to '{new_proxy_str}'")
+        self._proxy_str = new_proxy_str
+        self._upstream_proxy = pproxy.Connection(new_proxy_str) if new_proxy_str else None
 
-        if not all([scheme, host, port]):
-            raise ValueError("Incomplete proxy configuration")
-
-        # Build proxy string
-        proxy_str = f"{scheme}://{host}:{port}"
-        if username and password:
-            proxy_str += f"#{username}:{password}"
-
-        # Restart server if proxy configuration changed
-        if self._handler and proxy_str != self._proxy_str:
-
-            async def restart_server():
-                await self.stop()
-                self._proxy_str = proxy_str
-                self._upstream_proxy = pproxy.Connection(proxy_str)
-                await self.start()
-
-            asyncio.create_task(restart_server())
-        else:
-            self._proxy_str = proxy_str
-            self._upstream_proxy = pproxy.Connection(proxy_str)
+        # If server is already running, restart it to apply the new configuration
+        if self._handler:
+            logger.info("Restarting dynamic proxy to apply changes.")
+            await self.stop()
+            await self.start()
 
     async def start(self) -> None:
         """Start proxy server"""
@@ -114,12 +101,18 @@ class DynamicProxy:
             args["rserver"] = [self._upstream_proxy]
 
         self._handler = await self._server.start_server(args)
+        if self._upstream_proxy:
+            logger.info(f"Dynamic proxy started on {self._host}:{self._port} with upstream proxy: {self._proxy_str}")
+        else:
+            logger.info(f"Dynamic proxy started on {self._host}:{self._port} with direct connection.")
 
     async def stop(self) -> None:
         """Stop proxy server"""
         if self._handler:
             self._handler.close()
             await self._handler.wait_closed()
+            self._handler = None
+            self._server = None
             logger.info("Dynamic proxy stopped.")
 
     async def __aenter__(self) -> "DynamicProxy":
@@ -136,7 +129,7 @@ if __name__ == "__main__":
 
     async def main():
         async with DynamicProxy(port=8080) as proxy_server:
-            proxy_server.set_upstream_proxy(
+            await proxy_server.set_upstream_proxy(
                 {
                     "scheme": "socks5",
                     "host": "127.0.0.1",

@@ -11,7 +11,7 @@ from cloudflyer.log import apply_logging_adapter
 from cloudflyer.server import main, stop_instances
 
 EXAMPLE_TOKEN = "example_token"
-
+BASE_URL = "http://127.0.0.1:3000"
 
 def verify_cloudflare_challenge(result):
     try:
@@ -37,36 +37,47 @@ def verify_cloudflare_challenge(result):
 
 def create_task(data):
     headers = {"Content-Type": "application/json"}
-    response = requests.post("http://127.0.0.1:3000/createTask", json=data, headers=headers)
+    response = requests.post(f"{BASE_URL}/createTask", json=data, headers=headers)
     return response.json()
 
 
-def get_task_result(task_id, client_key="123456"):
+def get_task_result(task_id, client_key=EXAMPLE_TOKEN):
     headers = {"Content-Type": "application/json"}
 
     data = {"clientKey": client_key, "taskId": task_id}
 
     response = requests.post(
-        "http://localhost:3000/getTaskResult",
+        f"{BASE_URL}/getTaskResult",
         json=data,
         headers=headers,
     )
     return response.json()
 
 
-def start_server():
+def start_server(use_hazetunnel=True, headless=False):
     ready = threading.Event()
+    argl = ["-K", EXAMPLE_TOKEN]
+    if not use_hazetunnel:
+        argl.append("--no-hazetunnel")
+    if headless:
+        argl.append("--headless")
+    
     t = Thread(
         target=main,
         kwargs={
-            "argl": ["-K", EXAMPLE_TOKEN],
+            "argl": argl,
             "ready": ready,
             "log": False,
         },
         daemon=True,
     )
     t.start()
-    ready.wait()
+    # Use interruptible wait so Ctrl+C works
+    while not ready.is_set():
+        try:
+            ready.wait(timeout=0.1)
+        except KeyboardInterrupt:
+            raise
     return t
 
 
@@ -78,19 +89,23 @@ def poll_task_result(task_id) -> dict:
         time.sleep(3)
 
 
-def cloudflare_challenge(proxy=None):
-    start_server()
+def cloudflare_challenge(proxy=None, use_hazetunnel=True, headless=False, screencast_path=None):
+    start_server(use_hazetunnel, headless)
 
     data = {
         "clientKey": EXAMPLE_TOKEN,
         "type": "CloudflareChallenge",
         "url": "https://2captcha.com/demo/cloudflare-turnstile-challenge",
-        "userAgent": "CFNetwork/897.15 Darwin/17.5.0 (iPhone/6s iOS/11.3)",
     }
     
     # Add proxy configuration if provided
     if proxy:
         data["proxy"] = proxy
+    
+    # Add screencast configuration if provided
+    if screencast_path:
+        data["screencast_enabled"] = True
+        data["screencast_path"] = screencast_path
 
     task_info = create_task(data)
     result = poll_task_result(task_info["taskId"])
@@ -100,8 +115,8 @@ def cloudflare_challenge(proxy=None):
     print(f"\nChallenge verification result:\n{success}")
 
 
-def turnstile(proxy=None):
-    start_server()
+def turnstile(proxy=None, use_hazetunnel=True, headless=False, screencast_path=None):
+    start_server(use_hazetunnel, headless)
 
     data = {
         "clientKey": EXAMPLE_TOKEN,
@@ -113,6 +128,11 @@ def turnstile(proxy=None):
     # Add proxy configuration if provided
     if proxy:
         data["proxy"] = proxy
+    
+    # Add screencast configuration if provided
+    if screencast_path:
+        data["screencast_enabled"] = True
+        data["screencast_path"] = screencast_path
 
     print("Task:")
     print(json.dumps(data, indent=2))
@@ -129,8 +149,8 @@ def turnstile(proxy=None):
     if token:
         print(f"\nTurnstile token:\n{token}")
 
-def recapcha_invisible(proxy=None):
-    start_server()
+def recapcha_invisible(proxy=None, use_hazetunnel=True, headless=False, screencast_path=None):
+    start_server(use_hazetunnel, headless)
 
     data = {
         "clientKey": EXAMPLE_TOKEN,
@@ -143,6 +163,11 @@ def recapcha_invisible(proxy=None):
     # Add proxy configuration if provided
     if proxy:
         data["proxy"] = proxy
+    
+    # Add screencast configuration if provided
+    if screencast_path:
+        data["screencast_enabled"] = True
+        data["screencast_path"] = screencast_path
 
     task_info = create_task(data)
     result = poll_task_result(task_info["taskId"])
@@ -173,6 +198,9 @@ def main_cli():
         parser_cmd = subparsers.add_parser(cmd, help=f"Solve {cmd.replace('_', ' ')} challenge")
         parser_cmd.add_argument("-x", "--proxy", help="Proxy in format scheme://host:port (e.g., socks5://127.0.0.1:1080)")
         parser_cmd.add_argument("-v", "--verbose", help="Show verbose output", action="store_true")
+        parser_cmd.add_argument("-L", "--headless", action="store_true", help="Run browser in headless mode")
+        parser_cmd.add_argument("--no-hazetunnel", action="store_true", help="Skip hazetunnel and connect directly to pproxy upstream")
+        parser_cmd.add_argument("-s", "--screencast", help="Enable screencast recording and specify save path (e.g., ./recordings)")
 
     args = parser.parse_args()
     
@@ -182,6 +210,9 @@ def main_cli():
 
     # Parse proxy string if provided
     proxy = parse_proxy_string(args.proxy) if args.proxy else None
+    use_hazetunnel = not args.no_hazetunnel
+    headless = args.headless
+    screencast_path = args.screencast
     
     if args.verbose:
         apply_logging_adapter([
@@ -192,15 +223,16 @@ def main_cli():
             ('client connect', logging.DEBUG),
         ], level=10)
         logging.getLogger('hpack').setLevel(logging.WARNING)
+        logging.getLogger('urllib3').setLevel(logging.WARNING)
 
     # Execute corresponding function based on command
     try:
         if args.command == "turnstile":
-            turnstile(proxy)
+            turnstile(proxy, use_hazetunnel, headless, screencast_path)
         elif args.command == "cloudflare":
-            cloudflare_challenge(proxy)
+            cloudflare_challenge(proxy, use_hazetunnel, headless, screencast_path)
         elif args.command == "recaptcha":
-            recapcha_invisible(proxy)
+            recapcha_invisible(proxy, use_hazetunnel, headless, screencast_path)
         else:
             parser.print_help()
     finally:
