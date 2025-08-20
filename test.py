@@ -10,6 +10,7 @@ from curl_cffi import requests
 from cloudflyer.log import apply_logging_adapter
 from cloudflyer.server import main, stop_instances
 
+CLIENT_KEY = "example_token"
 EXAMPLE_TOKEN = "example_token"
 BASE_URL = "http://127.0.0.1:3000"
 
@@ -81,9 +82,9 @@ def start_server(use_hazetunnel=True, headless=False):
     return t
 
 
-def poll_task_result(task_id) -> dict:
+def poll_task_result(task_id, client_key) -> dict:
     while True:
-        cf_response = get_task_result(task_id)
+        cf_response = get_task_result(task_id, client_key)
         if cf_response["status"] == "completed":
             return cf_response["result"]
         time.sleep(3)
@@ -108,7 +109,7 @@ def cloudflare_challenge(proxy=None, use_hazetunnel=True, headless=False, screen
         data["screencast_path"] = screencast_path
 
     task_info = create_task(data)
-    result = poll_task_result(task_info["taskId"])
+    result = poll_task_result(task_info["taskId"], data["clientKey"])
     print(f"Challenge result:\n{json.dumps(result, indent=2)}")
 
     success = verify_cloudflare_challenge(result)
@@ -137,7 +138,7 @@ def turnstile(proxy=None, use_hazetunnel=True, headless=False, screencast_path=N
     print("Task:")
     print(json.dumps(data, indent=2))
     task_info = create_task(data)
-    result = poll_task_result(task_info["taskId"])
+    result = poll_task_result(task_info["taskId"], data["clientKey"])
     print(f"Turnstile result:\n{json.dumps(result, indent=2)}")
 
 
@@ -170,7 +171,7 @@ def recapcha_invisible(proxy=None, use_hazetunnel=True, headless=False, screenca
         data["screencast_path"] = screencast_path
 
     task_info = create_task(data)
-    result = poll_task_result(task_info["taskId"])
+    result = poll_task_result(task_info["taskId"], data["clientKey"])
     print(f"Challenge result:\n{json.dumps(result, indent=2)}")
 
 def parse_proxy_string(proxy_str):

@@ -8,3 +8,4 @@ pproxy==2.7.9
 cachetools
 loguru
 appdirs
+httpx[socks]

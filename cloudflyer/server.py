@@ -44,7 +44,7 @@ class CreateTaskRequest(BaseModel):
 
 class TaskResultRequest(BaseModel):
     clientKey: str
-    taskId: str
+    taskId: Optional[str] = None
 
 @app.post("/createTask")
 async def create_task(request: CreateTaskRequest):
@@ -53,7 +53,6 @@ async def create_task(request: CreateTaskRequest):
         raise HTTPException(status_code=403, detail="Invalid clientKey")
     if request.type not in ["CloudflareChallenge", "RecaptchaInvisible", "Turnstile"]:
         raise HTTPException(status_code=400, detail="Unsupported task type")
-    
     if request.type == "Turnstile" and not request.siteKey:
         raise HTTPException(status_code=400, detail="siteKey is required for Turnstile tasks")
     
@@ -87,7 +86,7 @@ async def get_task_result(request: TaskResultRequest):
     task = tasks[request.taskId]
     return {
         "status": task["status"],
-        "result": task["result"] if task["status"] == "completed" else None
+        "result": task["result"] if task["status"] == "completed" else None,
     }
     
 def stop_instances():

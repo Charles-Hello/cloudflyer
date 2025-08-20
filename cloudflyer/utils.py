@@ -1,3 +1,5 @@
+import httpx
+
 def get_free_port(host='127.0.0.1'):
     """
     Get an available free port on the specified IP address
@@ -19,3 +21,17 @@ def get_free_port(host='127.0.0.1'):
         return port
     finally:
         sock.close()
+
+async def test_proxy(proxy_config: dict):
+    """
+    Test the connectivity of a proxy.
+
+    Args:
+        proxy_config (dict): A dictionary containing proxy details (scheme, host, port).
+
+    Raises:
+        Exception: If the proxy test fails.
+    """
+    proxy_url = f"{proxy_config['scheme']}://{proxy_config['host']}:{proxy_config['port']}"
+    async with httpx.AsyncClient(proxy=proxy_url) as client:
+        await client.get("https://httpbin.org/get", timeout=10)

@@ -3,7 +3,7 @@ import logging
 
 from DrissionPage import ChromiumPage
 from DrissionPage.items import ChromiumElement
-from DrissionPage.errors import PageDisconnectedError
+from DrissionPage.errors import PageDisconnectedError, ContextLostError
 
 logger = logging.getLogger(__name__)
 
@@ -41,8 +41,19 @@ class CloudflareBypasser:
         for ele in eles:
             if "name" in ele.attrs.keys() and "type" in ele.attrs.keys():
                 if "turnstile" in ele.attrs["name"] and ele.attrs["type"] == "hidden":
-                    button = ele.parent().shadow_root.child()("tag:body").shadow_root("tag:input")
-                    break
+                    try:
+                        parent = ele.parent()
+                        if parent and parent.shadow_root:
+                            child = parent.shadow_root.child()
+                            if child:
+                                body = child("tag:body")
+                                if body and body.shadow_root:
+                                    button = body.shadow_root("tag:input")
+                                    if button:
+                                        break
+                    except Exception as e:
+                        logger.debug(f"Error finding turnstile button: {e}")
+                        continue
             
         if button:
             return button
@@ -69,10 +80,10 @@ class CloudflareBypasser:
         except Exception as e:
             if isinstance(e, PageDisconnectedError):
                 raise
-            logger.error(f"Error clicking verification button: {type(e).__name__}: {e}")
-            logger.error(f"Exception details: {repr(e)}")
-            import traceback
-            logger.error(f"Full traceback:\n{traceback.format_exc()}")
+            elif isinstance(e, ContextLostError):
+                pass
+            else:
+                logger.error(f"Error clicking verification button: {type(e).__name__}: {e}")
 
     def is_bypassed(self):
         try:

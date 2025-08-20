@@ -21,7 +21,7 @@ from DrissionPage import ChromiumPage, ChromiumOptions
 from DrissionPage.errors import PageDisconnectedError
 
 from .mitm import MITMProxy
-from .utils import get_free_port
+from .utils import get_free_port, test_proxy
 from .bypasser import CloudflareBypasser
 from . import html as html_res
 
@@ -405,35 +405,55 @@ class Instance:
             task["url"] = "http://" + task["url"]
 
         proxy = task.get("proxy")
-        linksocks = None
+        if proxy:
+            try:
+                logger.info(f"Testing proxy: {proxy}")
+                await test_proxy(proxy)
+                logger.info(f"Proxy test successful: {proxy}")
+            except Exception as e:
+                logger.error(f"Proxy test failed for {proxy}: {e}")
+                return {
+                    "success": False,
+                    "code": 500,
+                    "error": f"Proxy connection failed: {e}",
+                    "data": task,
+                }
+        linksocks = task.get("linksocks")
+
         if proxy and isinstance(proxy, dict):
+            logger.info(f"Task will be executed using proxy: {proxy}")
             await self.mitm.update_proxy(proxy)
-        else:
-            linksocks = task.get("linksocks", None)
-            if linksocks and isinstance(linksocks, dict):
-                linksocks_url = linksocks.get("url", None)
-                linksocks_token = linksocks.get("token", None)
-                if linksocks_url and linksocks_token:
-                    from .linksocks import LinkSocks
-                    links = LinkSocks()
-                    port = get_free_port()
-                    if not links.start(linksocks_token, linksocks_url, port):
-                        return {
-                            "success": False,
-                            "code": 500,
-                            "response": None,
-                            "error": "Fail to connect to the linksocks proxy.",
-                            "data": task,
-                        }
-                    self.mitm.update_proxy({"scheme": "socks5", "host": "127.0.0.1", "port": port})
-                else:
+        elif linksocks and isinstance(linksocks, dict):
+            linksocks_url = linksocks.get("url", None)
+            linksocks_token = linksocks.get("token", None)
+            if linksocks_url and linksocks_token:
+                from .linksocks import LinkSocks
+
+                links = LinkSocks()
+                port = get_free_port()
+                if not links.start(linksocks_token, linksocks_url, port):
                     return {
                         "success": False,
                         "code": 500,
                         "response": None,
-                        "error": "Either linksocks.url or linksocks.token is not provided.",
+                        "error": "Fail to connect to the linksocks proxy.",
                         "data": task,
                     }
+                
+                proxy_config = {"scheme": "socks5", "host": "127.0.0.1", "port": port}
+                logger.info(f"Task will be executed using linksocks proxy: {proxy_config}")
+                await self.mitm.update_proxy(proxy_config)
+            else:
+                return {
+                    "success": False,
+                    "code": 500,
+                    "response": None,
+                    "error": "Either linksocks.url or linksocks.token is not provided.",
+                    "data": task,
+                }
+        else:
+            logger.info("Task will be executed without proxy.")
+            await self.mitm.update_proxy(None)
                     
         self.addon.user_agent = task.get("userAgent", None)
         
