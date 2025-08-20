@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "cloudflyer"
-version = "1.0.5"
+version = "1.1.0"
 authors = [
     {name = "jackzzs", email = "jackzzs@outlook.com"},
 ]
