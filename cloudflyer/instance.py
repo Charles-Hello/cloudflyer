@@ -3,12 +3,10 @@ from datetime import datetime, timedelta
 import logging
 import os
 from pathlib import Path
-import socket
 from threading import Event
 import time
 from urllib.parse import urlparse
 from importlib import resources
-import platform
 import urllib3
 
 # Disable InsecureRequestWarning
@@ -18,7 +16,7 @@ import appdirs
 from cachetools import TTLCache
 from mitmproxy.http import HTTPFlow, Response
 from DrissionPage import ChromiumPage, ChromiumOptions
-from DrissionPage.errors import PageDisconnectedError
+from DrissionPage.errors import PageDisconnectedError, BrowserConnectError
 
 from .mitm import MITMProxy
 from .utils import get_free_port, test_proxy
@@ -353,7 +351,25 @@ class Instance:
             options.set_argument(argument)
         options.set_proxy(f"http://127.0.0.1:{self.mitm_port}")
         options.set_retry(20, 0.5)
-        self.driver = ChromiumPage(addr_or_opts=options, timeout=0.5)
+        
+        # Check for BrowserConnectError and run debugger if needed
+        try:
+            logger.info("Checking DrissionPage browser connection...")
+            self.driver = ChromiumPage(addr_or_opts=options, timeout=0.5)
+        except BrowserConnectError as e:
+            logger.warning(f"Browser connection failed: {e}")
+            logger.info("Running DrissionPage debugger to diagnose the issue...")
+            
+            # Import and run debugger
+            from .drission_debugger import run_drission_diagnosis
+            diagnosis_result = run_drission_diagnosis(
+                browser_path=self.browser_path,
+                proxy_port=self.mitm_port,
+                headless=self.headless
+            )
+            
+            # Re-raise the original error with diagnostic information
+            raise BrowserConnectError(f"Browser connection failed. Diagnosis completed. Check logs for recommendations. Original error: {e}") from e
         logger.debug("ChromiumPage driver initialized with MITM proxy.")
         self.driver.get('https://internals.cloudflyer.com/index')
 
