@@ -93,9 +93,9 @@ def ensure_tool(tool: str, name_override: Optional[str] = None) -> Optional[Path
 	# PATH/current
 	path = shutil.which(bin_name)
 	if path:
-		return Path(path)
+		return Path(path).resolve()
 	if Path(bin_name).exists():
-		return Path(bin_name)
+		return Path(bin_name).resolve()
 
 	# Use OS-specific user cache directory
 	cache_root = Path(appdirs.user_cache_dir("cloudflyer"))
@@ -103,7 +103,7 @@ def ensure_tool(tool: str, name_override: Optional[str] = None) -> Optional[Path
 	install_dir.mkdir(parents=True, exist_ok=True)
 	dest = install_dir / bin_name
 	if dest.exists():
-		return dest
+		return dest.resolve()
 
 	# Compute assets and URLs
 	base = RELEASE_BASE.get(tool)
@@ -129,7 +129,7 @@ def ensure_tool(tool: str, name_override: Optional[str] = None) -> Optional[Path
 				except Exception:
 					pass
 				logging.getLogger(__name__).info(f"Installed {tool} at {dest}")
-				return dest
+				return dest.resolve()
 
 	return None
 
