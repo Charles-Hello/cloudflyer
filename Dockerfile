@@ -1,15 +1,46 @@
-# Use the official Ubuntu image as the base image
-FROM kasmweb/desktop:1.16.0-rolling-daily
+FROM python:3.11-slim-bookworm as builder
 
-# Set environment variables to avoid interactive prompts during build
+# Build dummy packages to skip installing them and their dependencies
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends equivs \
+    && equivs-control libgl1-mesa-dri \
+    && printf 'Section: misc\nPriority: optional\nStandards-Version: 3.9.2\nPackage: libgl1-mesa-dri\nVersion: 99.0.0\nDescription: Dummy package for libgl1-mesa-dri\n' >> libgl1-mesa-dri \
+    && equivs-build libgl1-mesa-dri \
+    && mv libgl1-mesa-dri_*.deb /libgl1-mesa-dri.deb \
+    && equivs-control adwaita-icon-theme \
+    && printf 'Section: misc\nPriority: optional\nStandards-Version: 3.9.2\nPackage: adwaita-icon-theme\nVersion: 99.0.0\nDescription: Dummy package for adwaita-icon-theme\n' >> adwaita-icon-theme \
+    && equivs-build adwaita-icon-theme \
+    && mv adwaita-icon-theme_*.deb /adwaita-icon-theme.deb
+
+FROM python:3.11-slim-bookworm
+
+# Copy dummy packages
+COPY --from=builder /*.deb /
+
+# Set environment variables
 ENV DEBIAN_FRONTEND=noninteractive
+ENV CHROME_PATH=/usr/bin/chromium
+ENV CHROME_BIN=/usr/bin/chromium
 
-# Install necessary packages for Xvfb and pyvirtualdisplay
-USER root
-RUN add-apt-repository -y ppa:deadsnakes/ppa && \
-    apt-get update && \
-    apt-get install -y python3.10 python3.10-venv python3.10-dev && \
-    apt-get install -y \
+# Install dependencies and create cloudflyer user
+# You can test Chromium running this command inside the container:
+#    xvfb-run -s "-screen 0 1600x1200x24" chromium --no-sandbox
+WORKDIR /app
+
+# Install dummy packages
+RUN dpkg -i /libgl1-mesa-dri.deb \
+    && dpkg -i /adwaita-icon-theme.deb \
+    # Install dependencies
+    && apt-get update \
+    && apt-get install -y --no-install-recommends \
+        chromium \
+        chromium-common \
+        xvfb \
+        dumb-init \
+        procps \
+        curl \
+        vim \
+        xauth \
         wget \
         gnupg \
         ca-certificates \
@@ -22,56 +53,47 @@ RUN add-apt-repository -y ppa:deadsnakes/ppa && \
         libnss3 \
         libatk-bridge2.0-0 \
         libgtk-3-0 \
-        x11-apps \
         fonts-liberation \
         libappindicator3-1 \
         libu2f-udev \
         libvulkan1 \
         libdrm2 \
         xdg-utils \
-        xvfb \
         libasound2 \
         libcurl4 \
         libgbm1 \
-        && rm -rf /var/lib/apt/lists/*
+    # Remove temporary files and hardware decoding libraries
+    && rm -rf /var/lib/apt/lists/* \
+    && rm -f /usr/lib/x86_64-linux-gnu/libmfxhw* \
+    && rm -f /usr/lib/x86_64-linux-gnu/mfx/* \
+    # Create cloudflyer user
+    && useradd --home-dir /app --shell /bin/sh cloudflyer \
+    && chown -R cloudflyer:cloudflyer .
 
-# Add Google Chrome repository and install Google Chrome
-RUN wget https://mirror.cs.uchicago.edu/google-chrome/pool/main/g/google-chrome-stable/google-chrome-stable_126.0.6478.126-1_amd64.deb && \
-    dpkg -i google-chrome-stable_126.0.6478.126-1_amd64.deb && \
-    rm google-chrome-stable_126.0.6478.126-1_amd64.deb
-
-# Install Pip
-RUN curl -sS https://bootstrap.pypa.io/get-pip.py | python3.10
-
-# Set up a working directory
-WORKDIR /app
-
-# Create and activate virtual environment
-RUN python3.10 -m venv /app/venv
-ENV PATH="/app/venv/bin:$PATH"
+# Download linksocks and hazetunnel
+RUN wget -O /app/linksocks https://github.com/linksocks/linksocks/releases/latest/download/linksocks-linux-amd64 && \
+    chmod +x /app/linksocks && \
+    wget -O /app/hazetunnel https://github.com/zetxtech/hazetunnel/releases/download/v3.1.0/hazetunnel-linux-amd64 && \
+    chmod +x /app/hazetunnel
 
 # Copy application files
 COPY . .
 
-# Install Python dependencies in venv
-RUN /app/venv/bin/pip install -e .
+# Install Python dependencies
+RUN pip install -e . \
+    # Remove temporary files
+    && rm -rf /root/.cache
 
-# Download linksocks
-RUN set -eux; \
-    wget -O /app/linksocks https://github.com/linksocks/linksocks/releases/latest/download/linksocks-linux-amd64 && \
-    chmod +x /app/linksocks
+USER cloudflyer
 
-# Download linksocks
-RUN set -eux; \
-    wget -O /app/hazetunnel https://github.com/zetxtech/hazetunnel/releases/download/v3.1.0/hazetunnel-linux-amd64 && \
-    chmod +x /app/hazetunnel
+# Create chromium crash reports directory
+RUN mkdir -p "/app/.config/chromium/Crash Reports/pending"
 
 # Expose the port for the FastAPI server
 EXPOSE 3000
 
-# Copy and set up startup script
-COPY docker_startup.sh /
-RUN chmod +x /docker_startup.sh
+# dumb-init avoids zombie chromium processes
+ENTRYPOINT ["/usr/bin/dumb-init", "--"]
 
-# Default command
-ENTRYPOINT ["/docker_startup.sh"]
+# Start with xvfb for virtual display
+CMD ["sh", "-c", "xvfb-run -s '-screen 0 1600x1200x24' python -m cloudflyer \"$@\"", "--"]
