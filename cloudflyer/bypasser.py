@@ -107,7 +107,7 @@ class CloudflareBypasser:
             self.click_verification_button()
 
             try_count += 1
-            time.sleep(2)
+            time.sleep(0.5)
 
         if self.is_bypassed():
             logger.debug("Bypass successful.")

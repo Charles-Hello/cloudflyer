@@ -79,7 +79,7 @@ class LinkSocks:
 
 		self.process = self.execute(*args)
 
-		time.sleep(3)
+		time.sleep(2)
 
 		if self.process.poll() is not None:
 			return False

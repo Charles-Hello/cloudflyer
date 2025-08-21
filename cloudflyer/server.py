@@ -339,7 +339,7 @@ def main(argl: List[str] = None, ready: threading.Event = None, log: bool = True
     if args.vdisplay:
         from pyvirtualdisplay import Display
 
-        display = Display(visible=0, size=(1920, 1080))
+        display = Display(visible=False, size=(1024, 768))
         display.start()
 
     # Parse default proxy string if provided

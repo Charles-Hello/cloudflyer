@@ -19,7 +19,7 @@ from DrissionPage import ChromiumPage, ChromiumOptions
 from DrissionPage.errors import PageDisconnectedError, BrowserConnectError
 
 from .mitm import MITMProxy
-from .utils import get_free_port, test_proxy
+from .utils import get_free_port, get_net_info
 from .bypasser import CloudflareBypasser
 from . import html as html_res
 
@@ -31,7 +31,7 @@ COMMON_ARGUMENTS = [
     "-metrics-recording-only",
     "-disable-background-mode",
     "-disable-features=FlashDeprecationWarning,EnablePasswordsAccountStorage",
-    # "-disable-gpu",
+    # "-disable-gpu", # Detected by Cloudflare
     "-accept-lang=en-US",
     "--window-size=512,512",
     "--disable-infobars",
@@ -39,6 +39,10 @@ COMMON_ARGUMENTS = [
     "--disable-sync",
     "--app=https://internals.cloudflyer.com/index",
     "--lang=en",
+    # "--disable-setuid-sandbox", # Detected by Cloudflare
+    # "--disable-dev-shm-usage", # Detected by Cloudflare
+    "--disable-search-engine-choice-screen",
+    "--no-zygote",
 ]
 
 NON_HEADLESS_ARGUMENTS = [
@@ -273,7 +277,7 @@ class Instance:
         self.default_proxy_config = default_proxy
         self.allow_local_proxy = allow_local_proxy
         
-        # 根据headless模式选择合适的默认参数
+        # Select appropriate default arguments based on headless mode
         if arguments is None:
             self.arguments = HEADLESS_ARGUMENTS if headless else DEFAULT_ARGUMENTS
         else:
@@ -291,7 +295,7 @@ class Instance:
         self.screencast_active = False
         
     def _start_screencast(self, screencast_path):
-        """启动录屏"""
+        """Start screen recording"""
         try:
             import os
             os.makedirs(screencast_path, exist_ok=True)
@@ -308,7 +312,7 @@ class Instance:
             return False
     
     def _stop_screencast(self, suffix="", task_type="unknown"):
-        """统一的录屏停止方法"""
+        """Unified screen recording stop method"""
         if not self.screencast_active:
             return None
             
@@ -327,7 +331,8 @@ class Instance:
             return None
         finally:
             self.screencast_active = False
-        
+
+
     def start(self):
         # Initialize driver with MITM proxy
         self.mitm.start()
@@ -344,8 +349,8 @@ class Instance:
         options.set_paths(browser_path=self.browser_path)
         options.ignore_certificate_errors(True)
         if self.headless:
-            # Use modern headless mode for better Docker compatibility
-            options.set_argument("--headless=new")
+            options.set_argument("--headless")
+            logger.warning("Headless mode is enabled, but it may not work as expected for Captcha bypass.")
         for argument in self.arguments:
             options.set_argument(argument)
         options.set_proxy(f"http://127.0.0.1:{self.mitm_port}")
@@ -353,15 +358,15 @@ class Instance:
         
         # Check for BrowserConnectError and run debugger if needed
         try:
-            logger.info("Checking DrissionPage browser connection...")
+            logger.debug("Checking DrissionPage browser connection...")
             self.driver = ChromiumPage(addr_or_opts=options, timeout=0.5)
         except BrowserConnectError as e:
             logger.warning(f"Browser connection failed: {e}")
             logger.info("Running DrissionPage debugger to diagnose the issue...")
-            
-            # Import and run debugger
+
             from .drission_debugger import run_drission_diagnosis
-            diagnosis_result = run_drission_diagnosis(
+
+            run_drission_diagnosis(
                 browser_path=self.browser_path,
                 proxy_port=self.mitm_port,
                 headless=self.headless
@@ -414,7 +419,7 @@ class Instance:
         
         # Clear browser state
         self.driver.clear_cache()
-
+        
         # Setup screencast if enabled
         screencast_path = task.get("screencast_path")
         if screencast_path:
@@ -438,20 +443,8 @@ class Instance:
                     }
             except Exception:
                 pass
-            try:
-                logger.info(f"Testing proxy: {proxy}")
-                await test_proxy(proxy)
-                logger.info(f"Proxy test successful: {proxy}")
-            except Exception as e:
-                logger.error(f"Proxy test failed for {proxy}: {e}")
-                return {
-                    "success": False,
-                    "code": 500,
-                    "error": f"Proxy connection failed: {e}",
-                    "data": task,
-                }
         linksocks = task.get("linksocks")
-
+        
         if proxy and isinstance(proxy, dict):
             logger.info(f"Task will be executed using proxy chained after default external proxy: {proxy}")
             # Pass only task proxy; MITM will prepend default external proxy if present
@@ -491,7 +484,29 @@ class Instance:
                 logger.info("Task will be executed without proxy.")
             # None means MITM will fall back to default external proxy (if configured)
             await self.mitm.update_proxy(None)
-                    
+        
+        # Get network info through proxy stack (unified for all proxy types)
+        logger.info("Getting network info through proxy stack...")
+        net_info = await get_net_info(self.mitm_port)
+        if net_info:
+            # Display TLS info
+            if 'ua' in net_info:
+                logger.info(f"TLS Info - UA: {net_info['ua']}")
+            if 'ip' in net_info:
+                logger.info(f"TLS Info - IP: {net_info['ip']}")
+            if 'ja3' in net_info:
+                logger.info(f"TLS Info - JA3: {net_info['ja3']}")
+            if 'ja4' in net_info:
+                logger.info(f"TLS Info - JA4: {net_info['ja4']}")
+        else:
+            logger.warning("Proxy stack connection failed")
+            return {
+                "success": False,
+                "code": 500,
+                "error": "Proxy stack connection failed",
+                "data": task,
+            }
+        
         self.addon.user_agent = task.get("userAgent", None)
         
         try:
@@ -587,7 +602,7 @@ class Instance:
                             "token": token
                         }
                         break
-                    time.sleep(2)
+                    time.sleep(0.5)
             elif task["type"] == "CloudflareChallenge":
                 try_count = 0
                 bypass_failed_reason = None
@@ -604,7 +619,7 @@ class Instance:
                     logger.debug(f"Attempt {try_count + 1}: Verification page detected. Trying to bypass...")
                     cf_bypasser.click_verification_button()
                     try_count += 1
-                    time.sleep(1)
+                    time.sleep(0.5)
                 
                 if cf_bypasser.is_bypassed():
                     logger.debug("Bypass successful.")

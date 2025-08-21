@@ -103,4 +103,5 @@ def apply_logging_adapter(extra_patterns: List[Tuple[Union[str, Callable], int]]
         extra_patterns: See [InterceptHandler][(m).InterceptHandler.__init__].
         level: See [InterceptHandler][(m).InterceptHandler.__init__].
     """
+
     logging.basicConfig(handlers=[InterceptHandler(extra_patterns=extra_patterns)], level=level, force=True)
