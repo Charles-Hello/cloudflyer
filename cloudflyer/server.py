@@ -13,6 +13,7 @@ import uvicorn
 
 from .pool import InstancePool
 from .log import apply_logging_adapter
+from .downloader import ensure_tool
 
 app = FastAPI()
 logger = logging.getLogger(__name__)
@@ -131,9 +132,20 @@ def main(argl: List[str] = None, ready: threading.Event = None, log: bool = True
     parser.add_argument("-T", "--timeout", type=int, default=120, help="Maximum task timeout in seconds")
     parser.add_argument("-L", "--headless", action="store_true", help="Run browser in headless mode")
     parser.add_argument("-V", "--vdisplay", action="store_true", help="Run browser in virtual display mode")
-    parser.add_argument("--no-hazetunnel", action="store_true", help="Skip hazetunnel and connect directly to pproxy upstream")
+    parser.add_argument("-D", "--no-hazetunnel", action="store_true", help="Skip hazetunnel JA3 fingerprint spoofing")
+    parser.add_argument("--default-proxy", help="Default upstream proxy, format: scheme://host:port or scheme://user:pass@host:port")
+    parser.add_argument("--allow-local-proxy", action="store_true", help="Allow localhost proxies (127.0.0.1/localhost). Disabled by default.")
     
     args = parser.parse_args(argl)
+
+    # Ensure external helpers are available at startup with logs
+    try:
+        if not args.no_hazetunnel:
+            ensure_tool("hazetunnel")
+        ensure_tool("linksocks")
+    except Exception:
+        # Do not crash the server on download failure; downstream will raise when used
+        pass
 
     # Store the expected clientKey for request validation
     client_key = args.clientKey
@@ -144,8 +156,35 @@ def main(argl: List[str] = None, ready: threading.Event = None, log: bool = True
         display = Display(visible=0, size=(1920, 1080))
         display.start()
 
+    # Parse default proxy string if provided
+    def _parse_proxy_string(proxy_str):
+        if not proxy_str:
+            return None
+        try:
+            if "@" in proxy_str:
+                scheme, rest = proxy_str.split("://", 1)
+                auth, host_port = rest.split("@", 1)
+                username, password = auth.split(":", 1)
+                host, port = host_port.split(":", 1)
+                return {"scheme": scheme, "host": host, "port": int(port), "username": username, "password": password}
+            else:
+                scheme, rest = proxy_str.split("://", 1)
+                host, port = rest.split(":", 1)
+                return {"scheme": scheme, "host": host, "port": int(port)}
+        except Exception:
+            raise ValueError("Invalid --default-proxy format. Use scheme://host:port or scheme://user:pass@host:port")
+
+    default_proxy_cfg = _parse_proxy_string(args.default_proxy) if args.default_proxy else None
+
     try:
-        instance_pool = InstancePool(size=args.maxTasks, timeout=args.timeout, use_hazetunnel=not args.no_hazetunnel, headless=args.headless)
+        instance_pool = InstancePool(
+            size=args.maxTasks,
+            timeout=args.timeout,
+            use_hazetunnel=not args.no_hazetunnel,
+            headless=args.headless,
+            default_proxy=default_proxy_cfg,
+            allow_local_proxy=args.allow_local_proxy,
+        )
         instance_pool.init_instances()
         
         if ready:

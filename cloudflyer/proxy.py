@@ -29,8 +29,8 @@ class DynamicProxy:
         self._password = password
         self._server = None
         self._handler = None
-        self._upstream_proxy = None
-        self._proxy_str = None
+        self._upstream_proxies = None  # List[pproxy.Connection]
+        self._proxy_strs = None        # List[str]
 
     @property
     def host(self):
@@ -54,29 +54,42 @@ class DynamicProxy:
             }
             If None, clear proxy configuration
         """
-        new_proxy_str = None
-        if proxy_config:
-            scheme = proxy_config.get("scheme", "").lower()
-            host = proxy_config.get("host", "")
-            port = proxy_config.get("port", 0)
-            username = proxy_config.get("username")
-            password = proxy_config.get("password")
-
+        def _to_conn(cfg: Dict[str, Any]) -> tuple[pproxy.Connection, str]:
+            scheme = cfg.get("scheme", "").lower()
+            host = cfg.get("host", "")
+            port = cfg.get("port", 0)
+            username = cfg.get("username")
+            password = cfg.get("password")
             if not all([scheme, host, port]):
                 raise ValueError("Incomplete proxy configuration")
-
-            new_proxy_str = f"{scheme}://{host}:{port}"
+            uri = f"{scheme}://{host}:{port}"
             if username and password:
-                new_proxy_str += f"#{username}:{password}"
+                uri += f"#{username}:{password}"
+            return pproxy.Connection(uri), uri
+
+        new_proxy_strs = None
+        new_upstream_list = None
+        if proxy_config:
+            if isinstance(proxy_config, list):
+                new_upstream_list = []
+                new_proxy_strs = []
+                for cfg in proxy_config:
+                    conn, uri = _to_conn(cfg)
+                    new_upstream_list.append(conn)
+                    new_proxy_strs.append(uri)
+            else:
+                conn, uri = _to_conn(proxy_config)
+                new_upstream_list = [conn]
+                new_proxy_strs = [uri]
 
         # Only proceed if proxy configuration has changed
-        if new_proxy_str == self._proxy_str:
-            logger.debug(f"Upstream proxy configuration unchanged: {self._proxy_str}")
+        if new_proxy_strs == self._proxy_strs:
+            logger.debug(f"Upstream proxy configuration unchanged: {self._proxy_strs}")
             return
 
-        logger.info(f"Upstream proxy changed from '{self._proxy_str}' to '{new_proxy_str}'")
-        self._proxy_str = new_proxy_str
-        self._upstream_proxy = pproxy.Connection(new_proxy_str) if new_proxy_str else None
+        logger.info(f"Upstream proxy chain changed from '{self._proxy_strs}' to '{new_proxy_strs}'")
+        self._proxy_strs = new_proxy_strs
+        self._upstream_proxies = new_upstream_list
 
         # If server is already running, restart it to apply the new configuration
         if self._handler:
@@ -97,12 +110,12 @@ class DynamicProxy:
             "rserver": [],  # Empty list means direct connection
         }
 
-        if self._upstream_proxy:
-            args["rserver"] = [self._upstream_proxy]
+        if self._upstream_proxies:
+            args["rserver"] = self._upstream_proxies
 
         self._handler = await self._server.start_server(args)
-        if self._upstream_proxy:
-            logger.info(f"Dynamic proxy started on {self._host}:{self._port} with upstream proxy: {self._proxy_str}")
+        if self._upstream_proxies:
+            logger.info(f"Dynamic proxy started on {self._host}:{self._port} with upstream chain: {self._proxy_strs}")
         else:
             logger.info(f"Dynamic proxy started on {self._host}:{self._port} with direct connection.")
 

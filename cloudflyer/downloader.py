@@ -3,6 +3,8 @@ import platform
 import shutil
 import stat
 import tempfile
+import time
+import logging
 from pathlib import Path
 from typing import Optional
 import appdirs
@@ -37,12 +39,45 @@ def _detect_asset_names(tool: str) -> list[str]:
 	raise ValueError("Unknown tool: " + tool)
 
 
-def _download_to(url: str, dest: Path) -> bool:
+def _format_bytes(num_bytes: float) -> str:
+	units = ["B", "KB", "MB", "GB", "TB"]
+	idx = 0
+	val = float(num_bytes)
+	while val >= 1024 and idx < len(units) - 1:
+		val /= 1024.0
+		idx += 1
+	return f"{val:.1f}{units[idx]}"
+
+
+def _download_to(url: str, dest: Path, *, label: str) -> bool:
 	try:
-		with urllib.request.urlopen(url, timeout=30) as r, open(dest, "wb") as f:
-			shutil.copyfileobj(r, f)
+		logger = logging.getLogger(__name__)
+		with urllib.request.urlopen(url, timeout=30) as r:
+			length_hdr = r.headers.get("Content-Length")
+			total_bytes = int(length_hdr) if length_hdr and length_hdr.isdigit() else None
+			chunk_size = 64 * 1024
+			read_bytes = 0
+			start_ts = time.time()
+			last_log = start_ts
+			logger.info(f"Starting download {label}: {url}")
+			with open(dest, "wb") as f:
+				while True:
+					chunk = r.read(chunk_size)
+					if not chunk:
+						break
+					f.write(chunk)
+					read_bytes += len(chunk)
+					now = time.time()
+					if now - last_log >= 2:
+						elapsed = now - start_ts
+						speed = read_bytes / elapsed if elapsed > 0 else 0
+						total_str = _format_bytes(total_bytes) if total_bytes else "?"
+						logger.info(f"Downloading {label}: {_format_bytes(read_bytes)}/{total_str} ({_format_bytes(speed)}/s)")
+						last_log = now
+		logger.info(f"Download complete {label}: {_format_bytes(read_bytes)}")
 		return True
-	except Exception:
+	except Exception as e:
+		logging.getLogger(__name__).debug(f"Download failed {label}: {e}")
 		return False
 
 
@@ -78,13 +113,14 @@ def ensure_tool(tool: str, name_override: Optional[str] = None) -> Optional[Path
 	assets = _detect_asset_names(tool)
 	urls = []
 	for asset in assets:
-		urls.append(f"{base}/{asset}")
-		urls.append(f"{base_proxy}/{asset}")
+		urls.append((f"{base}/{asset}", asset))
+		urls.append((f"{base_proxy}/{asset}", asset))
 
 	with tempfile.TemporaryDirectory() as td:
-		tmp = Path(td) / asset
-		for u in urls:
-			if _download_to(u, tmp):
+		for u, asset in urls:
+			tmp = Path(td) / asset
+			label = f"{tool} ({asset})"
+			if _download_to(u, tmp, label=label):
 				shutil.copy2(tmp, dest)
 				# chmod +x on unix
 				try:
@@ -92,6 +128,7 @@ def ensure_tool(tool: str, name_override: Optional[str] = None) -> Optional[Path
 					os.chmod(dest, mode | stat.S_IEXEC)
 				except Exception:
 					pass
+				logging.getLogger(__name__).info(f"Installed {tool} at {dest}")
 				return dest
 
 	return None

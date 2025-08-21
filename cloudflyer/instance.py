@@ -268,10 +268,14 @@ class Instance:
         certdir: str = str(DEFAULT_CERT_PATH),
         use_hazetunnel: bool = True,
         headless: bool = False,
+        default_proxy: dict = None,
+        allow_local_proxy: bool = False,
     ):
         self.browser_path = browser_path
         self.certdir = certdir
         self.headless = headless
+        self.default_proxy_config = default_proxy
+        self.allow_local_proxy = allow_local_proxy
         
         # 根据headless模式选择合适的默认参数
         if arguments is None:
@@ -286,6 +290,7 @@ class Instance:
             certdir=self.certdir,
             addons=[self.addon],
             use_hazetunnel=use_hazetunnel,
+            default_external_proxy=self.default_proxy_config,
         )
         self.screencast_active = False
         
@@ -406,6 +411,18 @@ class Instance:
 
         proxy = task.get("proxy")
         if proxy:
+            # Block local proxies unless allowed
+            try:
+                host_val = (proxy.get("host") or "").lower()
+                if (host_val in {"127.0.0.1", "localhost"}) and (not self.allow_local_proxy):
+                    return {
+                        "success": False,
+                        "code": 400,
+                        "error": "Local proxies are disabled. Use --allow-local-proxy to enable.",
+                        "data": task,
+                    }
+            except Exception:
+                pass
             try:
                 logger.info(f"Testing proxy: {proxy}")
                 await test_proxy(proxy)
@@ -421,7 +438,8 @@ class Instance:
         linksocks = task.get("linksocks")
 
         if proxy and isinstance(proxy, dict):
-            logger.info(f"Task will be executed using proxy: {proxy}")
+            logger.info(f"Task will be executed using proxy chained after default external proxy: {proxy}")
+            # Pass only task proxy; MITM will prepend default external proxy if present
             await self.mitm.update_proxy(proxy)
         elif linksocks and isinstance(linksocks, dict):
             linksocks_url = linksocks.get("url", None)
@@ -452,7 +470,11 @@ class Instance:
                     "data": task,
                 }
         else:
-            logger.info("Task will be executed without proxy.")
+            if self.default_proxy_config:
+                logger.info("Task will be executed with default external proxy as enforced first hop.")
+            else:
+                logger.info("Task will be executed without proxy.")
+            # None means MITM will fall back to default external proxy (if configured)
             await self.mitm.update_proxy(None)
                     
         self.addon.user_agent = task.get("userAgent", None)
@@ -563,7 +585,7 @@ class Instance:
                     logger.debug(f"Attempt {try_count + 1}: Verification page detected. Trying to bypass...")
                     cf_bypasser.click_verification_button()
                     try_count += 1
-                    time.sleep(2)
+                    time.sleep(1)
                 if cf_bypasser.is_bypassed():
                     logger.debug("Bypass successful.")
                 else:

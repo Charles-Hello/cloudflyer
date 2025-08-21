@@ -5,7 +5,7 @@ import threading
 import random
 import string
 import os
-from typing import List, Type
+from typing import List, Type, Optional, Dict, Any
 
 from mitmproxy import http, options, ctx
 from mitmproxy.tools.dump import DumpMaster
@@ -40,6 +40,7 @@ class MITMProxy:
         certdir: str = "~/.mitmproxy",
         addons: List[Type] = None,
         use_hazetunnel: bool = True,
+        default_external_proxy: Optional[Dict[str, Any]] = None,
     ):
         self._host = host
         self._mitm_port = port
@@ -50,12 +51,20 @@ class MITMProxy:
         self._running = False
         self._addons = addons or []
         self._use_hazetunnel = use_hazetunnel
+        self._default_external_proxy: Optional[Dict[str, Any]] = default_external_proxy or None
         # Generate random username and password for dynamic proxy
         random_username = "".join(random.choices(string.ascii_letters + string.digits, k=8))
         random_password = "".join(random.choices(string.ascii_letters + string.digits, k=12))
         random_port = get_free_port()
         self._dynamic_proxy = DynamicProxy(
             host="127.0.0.1", port=random_port, username=random_username, password=random_password
+        )
+        # Stable default forwarder between hazetunnel and dynamic proxy
+        forward_username = "".join(random.choices(string.ascii_letters + string.digits, k=8))
+        forward_password = "".join(random.choices(string.ascii_letters + string.digits, k=12))
+        forward_port = get_free_port()
+        self._default_proxy = DynamicProxy(
+            host="127.0.0.1", port=forward_port, username=forward_username, password=forward_password
         )
         
         if self._use_hazetunnel:
@@ -67,12 +76,12 @@ class MITMProxy:
             self._upstream_auth = f"{self._hazetunnel_username}:{self._hazetunnel_password}"
             self._hazetunnel: HazeTunnel = None
         else:
-            # Direct connection to dynamic proxy
+            # Direct connection to default forwarder proxy
             self._hazetunnel_username = None
             self._hazetunnel_password = None
             self._hazetunnel_port = None
-            self._upstream_uri = f"http://127.0.0.1:{self._dynamic_proxy.port}"
-            self._upstream_auth = f"{self._dynamic_proxy._username}:{self._dynamic_proxy._password}"
+            self._upstream_uri = f"http://127.0.0.1:{self._default_proxy.port}"
+            self._upstream_auth = f"{self._default_proxy._username}:{self._default_proxy._password}"
             self._hazetunnel: HazeTunnel = None
         
         self._username = username
@@ -82,6 +91,25 @@ class MITMProxy:
         logger.info(f"Starting MITM proxy on http://127.0.0.1:{self._mitm_port}.")
         logger.info(f"Starting dynamic proxy on socks5h://127.0.0.1:{self._dynamic_proxy.port} and http://127.0.0.1:{self._dynamic_proxy.port}.")
         await self._dynamic_proxy.start()
+        # Dynamic proxy starts without upstream (will be configured by tasks)
+
+        # Start default forwarder
+        logger.info(f"Starting default forwarder proxy on socks5h://127.0.0.1:{self._default_proxy.port} and http://127.0.0.1:{self._default_proxy.port}.")
+        await self._default_proxy.start()
+        
+        # Configure default_proxy based on whether we have default external proxy
+        if self._default_external_proxy:
+            await self._default_proxy.set_upstream_proxy(self._default_external_proxy)
+        else:
+            await self._default_proxy.set_upstream_proxy(
+                {
+                    "scheme": "socks5",
+                    "host": "127.0.0.1",
+                    "port": self._dynamic_proxy.port,
+                    "username": self._dynamic_proxy._username,
+                    "password": self._dynamic_proxy._password,
+                }
+            )
         
         if self._use_hazetunnel:
             # Start hazetunnel and point it upstream to dynamic proxy (no cert/key). It creates its own temp working dir.
@@ -91,13 +119,14 @@ class MITMProxy:
                 username=self._hazetunnel_username,
                 password=self._hazetunnel_password,
             )
+            # Point hazetunnel upstream to default forwarder proxy
             self._hazetunnel.set_upstream_proxy(
                 {
                     "scheme": "socks5h",
                     "host": "127.0.0.1",
-                    "port": self._dynamic_proxy.port,
-                    "username": self._dynamic_proxy._username,
-                    "password": self._dynamic_proxy._password,
+                    "port": self._default_proxy.port,
+                    "username": self._default_proxy._username,
+                    "password": self._default_proxy._password,
                 }
             )
             # Do not pass cert/key; hazetunnel will generate within its work dir
@@ -107,7 +136,7 @@ class MITMProxy:
             if not self._hazetunnel.start():
                 raise RuntimeError("Failed to start hazetunnel")
         else:
-            logger.info("Skipping hazetunnel, using direct connection to pproxy upstream.")
+            logger.info("Skipping hazetunnel, using default forwarder as upstream.")
 
         opts = options.Options(
             listen_host=self._host,
@@ -169,6 +198,8 @@ class MITMProxy:
             if self._loop:
                 logger.info("Stopping dynamic proxy.")
                 self._loop.call_soon_threadsafe(lambda: asyncio.create_task(self._dynamic_proxy.stop()))
+                logger.info("Stopping default forwarder proxy.")
+                self._loop.call_soon_threadsafe(lambda: asyncio.create_task(self._default_proxy.stop()))
             if self._use_hazetunnel and self._hazetunnel:
                 logger.info("Stopping hazetunnel.")
                 self._hazetunnel.stop()
@@ -185,9 +216,32 @@ class MITMProxy:
         self.stop()
 
     async def update_proxy(self, proxy_config=None):
-        """Update upstream proxy configuration"""
+        """Update upstream proxy configuration.
+        
+        default_proxy handles the default external proxy (first hop).
+        dynamic_proxy only handles the task-specific proxy (second hop).
+        """
+        async def _apply():
+            # Configure default_proxy with default external proxy
+            if self._default_external_proxy:
+                await self._default_proxy.set_upstream_proxy(self._default_external_proxy)
+            else:
+                # If no default external proxy, default_proxy points directly to dynamic_proxy
+                await self._default_proxy.set_upstream_proxy(
+                    {
+                        "scheme": "socks5",
+                        "host": "127.0.0.1",
+                        "port": self._dynamic_proxy.port,
+                        "username": self._dynamic_proxy._username,
+                        "password": self._dynamic_proxy._password,
+                    }
+                )
+            
+            # Configure dynamic_proxy with task-specific proxy only
+            await self._dynamic_proxy.set_upstream_proxy(proxy_config)
+
         if self._loop:
-            future = asyncio.run_coroutine_threadsafe(self._dynamic_proxy.set_upstream_proxy(proxy_config), self._loop)
+            future = asyncio.run_coroutine_threadsafe(_apply(), self._loop)
             future.result()
         else:
-            await self._dynamic_proxy.set_upstream_proxy(proxy_config)
+            await _apply()
