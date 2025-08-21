@@ -1,13 +1,14 @@
 import logging
 import sys
 import uuid
-from typing import List, Optional
+from typing import List, Optional, Union
 import argparse
 import threading
 from cachetools import TTLCache
 from datetime import timedelta
+import re
 
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator, Field
 from fastapi import FastAPI, HTTPException
 import uvicorn
 
@@ -23,25 +24,208 @@ tasks = TTLCache(maxsize=10000, ttl=timedelta(days=1).total_seconds())
 client_key = None
 
 class ProxyConfig(BaseModel):
-    scheme: str
-    host: str
-    port: int
+    scheme: str = Field(..., description="Proxy scheme (http, https, socks4, socks5)")
+    host: str = Field(..., description="Proxy host/IP address")
+    port: int = Field(..., ge=1, le=65535, description="Proxy port (1-65535)")
+    username: Optional[str] = Field(None, description="Proxy username for authentication")
+    password: Optional[str] = Field(None, description="Proxy password for authentication")
+
+    @field_validator('scheme')
+    @classmethod
+    def validate_scheme(cls, v: str) -> str:
+        """Validate and normalize proxy scheme"""
+        v = v.lower().strip()
+        
+        # Convert socks5h to socks5 (automatic conversion)
+        if v == 'socks5h':
+            logger.info("Converting socks5h to socks5 - socks5h is not supported")
+            v = 'socks5'
+        
+        # Supported proxy schemes
+        supported_schemes = {'http', 'https', 'socks4', 'socks5'}
+        if v not in supported_schemes:
+            raise ValueError(f"Unsupported proxy scheme '{v}'. Supported schemes: {', '.join(supported_schemes)}")
+        
+        return v
+
+    @field_validator('host')
+    @classmethod
+    def validate_host(cls, v: str) -> str:
+        """Validate proxy host"""
+        v = v.strip()
+        if not v:
+            raise ValueError("Proxy host cannot be empty")
+        
+        # Basic validation for IP address or hostname
+        # Allow IPv4, IPv6, and domain names
+        ip_pattern = re.compile(
+            r'^(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}'
+            r'(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$'
+        )
+        ipv6_pattern = re.compile(r'^(?:[0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}$')
+        domain_pattern = re.compile(r'^[a-zA-Z0-9]([a-zA-Z0-9\-]*[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9\-]*[a-zA-Z0-9])?)*$')
+        
+        if not (ip_pattern.match(v) or ipv6_pattern.match(v) or domain_pattern.match(v) or v == 'localhost'):
+            raise ValueError(f"Invalid proxy host format: {v}")
+        
+        return v
+
+    @classmethod
+    def from_string(cls, proxy_str: str) -> 'ProxyConfig':
+        """Parse proxy from string format: scheme://[username:password@]host:port"""
+        if not proxy_str or not isinstance(proxy_str, str):
+            raise ValueError("Proxy string cannot be empty")
+        
+        proxy_str = proxy_str.strip()
+        
+        # Parse scheme
+        if '://' not in proxy_str:
+            raise ValueError("Proxy string must contain scheme (e.g., http://host:port)")
+        
+        scheme, rest = proxy_str.split('://', 1)
+        
+        # Parse authentication and host:port
+        username = None
+        password = None
+        
+        if '@' in rest:
+            auth_part, host_port = rest.rsplit('@', 1)
+            if ':' in auth_part:
+                username, password = auth_part.split(':', 1)
+            else:
+                raise ValueError("Invalid authentication format. Use username:password@host:port")
+        else:
+            host_port = rest
+        
+        # Parse host and port
+        if ':' not in host_port:
+            raise ValueError("Port must be specified in proxy string")
+        
+        # Handle IPv6 addresses in brackets
+        if host_port.startswith('[') and ']:' in host_port:
+            host, port_str = host_port.rsplit(']:', 1)
+            host = host[1:]  # Remove leading [
+        else:
+            host, port_str = host_port.rsplit(':', 1)
+        
+        try:
+            port = int(port_str)
+        except ValueError:
+            raise ValueError(f"Invalid port number: {port_str}")
+        
+        return cls(
+            scheme=scheme,
+            host=host,
+            port=port,
+            username=username,
+            password=password
+        )
+
+    def to_url(self) -> str:
+        """Convert proxy config to URL string"""
+        auth = f"{self.username}:{self.password}@" if self.username and self.password else ""
+        return f"{self.scheme}://{auth}{self.host}:{self.port}"
+
+    def to_dict(self) -> dict:
+        """Convert to dictionary for backward compatibility"""
+        result = {
+            "scheme": self.scheme,
+            "host": self.host,
+            "port": self.port
+        }
+        if self.username:
+            result["username"] = self.username
+        if self.password:
+            result["password"] = self.password
+        return result
 
 class LinkSocksConfig(BaseModel):
     url: str
     token: str
 
 class CreateTaskRequest(BaseModel):
-    clientKey: str
-    type: str
-    url: str
-    userAgent: Optional[str] = None
-    proxy: Optional[ProxyConfig] = None
-    siteKey: Optional[str] = None
-    action: Optional[str] = None
-    content: bool = False
-    linksocks: Optional[LinkSocksConfig] = None
-    screencast_path: Optional[str] = None
+    clientKey: str = Field(..., description="Client API key for authentication")
+    type: str = Field(..., description="Task type (CloudflareChallenge, RecaptchaInvisible, Turnstile)")
+    url: str = Field(..., description="Target URL to process")
+    userAgent: Optional[str] = Field(None, description="Custom User-Agent string")
+    proxy: Optional[Union[ProxyConfig, str]] = Field(None, description="Proxy configuration (object or string)")
+    siteKey: Optional[str] = Field(None, description="Site key for captcha challenges")
+    action: Optional[str] = Field(None, description="Action for RecaptchaInvisible")
+    content: bool = Field(False, description="Return page content")
+    linksocks: Optional[LinkSocksConfig] = Field(None, description="LinkSocks tunnel configuration")
+    screencast_path: Optional[str] = Field(None, description="Path for screencast recording")
+
+    @field_validator('type')
+    @classmethod
+    def validate_type(cls, v: str) -> str:
+        """Validate task type"""
+        supported_types = {"CloudflareChallenge", "RecaptchaInvisible", "Turnstile"}
+        if v not in supported_types:
+            raise ValueError(f"Unsupported task type '{v}'. Supported types: {', '.join(supported_types)}")
+        return v
+
+    @field_validator('url')
+    @classmethod
+    def validate_url(cls, v: str) -> str:
+        """Validate URL format"""
+        v = v.strip()
+        if not v:
+            raise ValueError("URL cannot be empty")
+        
+        # Basic URL validation
+        url_pattern = re.compile(
+            r'^https?://'  # http:// or https://
+            r'(?:(?:[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?\.)+[A-Z]{2,6}\.?|'  # domain...
+            r'localhost|'  # localhost...
+            r'\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})'  # ...or ip
+            r'(?::\d+)?'  # optional port
+            r'(?:/?|[/?]\S+)$', re.IGNORECASE)
+        
+        if not url_pattern.match(v):
+            raise ValueError(f"Invalid URL format: {v}")
+        
+        return v
+
+    @field_validator('proxy')
+    @classmethod
+    def validate_proxy(cls, v: Union[ProxyConfig, str, None]) -> Optional[ProxyConfig]:
+        """Validate and convert proxy configuration"""
+        if v is None:
+            return None
+        
+        if isinstance(v, str):
+            # Parse proxy string and return ProxyConfig object
+            try:
+                return ProxyConfig.from_string(v)
+            except ValueError as e:
+                raise ValueError(f"Invalid proxy string: {e}")
+        elif isinstance(v, dict):
+            # Convert dict to ProxyConfig
+            try:
+                return ProxyConfig(**v)
+            except Exception as e:
+                raise ValueError(f"Invalid proxy configuration: {e}")
+        elif isinstance(v, ProxyConfig):
+            return v
+        else:
+            raise ValueError("Proxy must be a string, dict, or ProxyConfig object")
+
+    @field_validator('siteKey')
+    @classmethod
+    def validate_site_key(cls, v: Optional[str], info) -> Optional[str]:
+        """Validate siteKey based on task type"""
+        if info.data.get('type') == 'Turnstile' and not v:
+            raise ValueError("siteKey is required for Turnstile tasks")
+        return v
+
+    @field_validator('action')
+    @classmethod
+    def validate_action(cls, v: Optional[str], info) -> Optional[str]:
+        """Validate action based on task type"""
+        if info.data.get('type') == 'RecaptchaInvisible' and v is not None:
+            if not v.strip():
+                raise ValueError("action cannot be empty for RecaptchaInvisible tasks")
+        return v
 
 class TaskResultRequest(BaseModel):
     clientKey: str
@@ -52,13 +236,15 @@ async def create_task(request: CreateTaskRequest):
     # Validate clientKey
     if request.clientKey != client_key:
         raise HTTPException(status_code=403, detail="Invalid clientKey")
-    if request.type not in ["CloudflareChallenge", "RecaptchaInvisible", "Turnstile"]:
-        raise HTTPException(status_code=400, detail="Unsupported task type")
-    if request.type == "Turnstile" and not request.siteKey:
-        raise HTTPException(status_code=400, detail="siteKey is required for Turnstile tasks")
     
+    # Convert the validated request to dict for processing
     data = request.model_dump()
     data.pop("clientKey", None)
+    
+    # Convert ProxyConfig to dict if present
+    if data.get("proxy") and isinstance(data["proxy"], ProxyConfig):
+        data["proxy"] = data["proxy"].to_dict()
+    
     task_id = str(uuid.uuid4())
     tasks[task_id] = {
         "status": "processing",
@@ -133,8 +319,8 @@ def main(argl: List[str] = None, ready: threading.Event = None, log: bool = True
     parser.add_argument("-L", "--headless", action="store_true", help="Run browser in headless mode")
     parser.add_argument("-V", "--vdisplay", action="store_true", help="Run browser in virtual display mode")
     parser.add_argument("-D", "--no-hazetunnel", action="store_true", help="Skip hazetunnel JA3 fingerprint spoofing")
-    parser.add_argument("--default-proxy", help="Default upstream proxy, format: scheme://host:port or scheme://user:pass@host:port")
-    parser.add_argument("--allow-local-proxy", action="store_true", help="Allow localhost proxies (127.0.0.1/localhost). Disabled by default.")
+    parser.add_argument("-X", "--default-proxy", help="Default upstream proxy, format: scheme://host:port or scheme://user:pass@host:port")
+    parser.add_argument("-A", "--allow-local-proxy", action="store_true", help="Allow localhost proxies (127.0.0.1/localhost). Disabled by default.")
     
     args = parser.parse_args(argl)
 
@@ -161,18 +347,10 @@ def main(argl: List[str] = None, ready: threading.Event = None, log: bool = True
         if not proxy_str:
             return None
         try:
-            if "@" in proxy_str:
-                scheme, rest = proxy_str.split("://", 1)
-                auth, host_port = rest.split("@", 1)
-                username, password = auth.split(":", 1)
-                host, port = host_port.split(":", 1)
-                return {"scheme": scheme, "host": host, "port": int(port), "username": username, "password": password}
-            else:
-                scheme, rest = proxy_str.split("://", 1)
-                host, port = rest.split(":", 1)
-                return {"scheme": scheme, "host": host, "port": int(port)}
-        except Exception:
-            raise ValueError("Invalid --default-proxy format. Use scheme://host:port or scheme://user:pass@host:port")
+            proxy_config = ProxyConfig.from_string(proxy_str)
+            return proxy_config.to_dict()
+        except ValueError as e:
+            raise ValueError(f"Invalid --default-proxy format: {e}")
 
     default_proxy_cfg = _parse_proxy_string(args.default_proxy) if args.default_proxy else None
 

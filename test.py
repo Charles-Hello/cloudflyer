@@ -139,7 +139,6 @@ def cloudflare_challenge(default_proxy_str=None, use_hazetunnel=True, headless=F
     
     # Add screencast configuration if provided
     if screencast_path:
-        data["screencast_enabled"] = True
         data["screencast_path"] = screencast_path
 
     task_info = create_task(data)
@@ -167,7 +166,6 @@ def turnstile(default_proxy_str=None, use_hazetunnel=True, headless=False, scree
     
     # Add screencast configuration if provided
     if screencast_path:
-        data["screencast_enabled"] = True
         data["screencast_path"] = screencast_path
 
     print("Task:")
@@ -203,7 +201,6 @@ def recapcha_invisible(default_proxy_str=None, use_hazetunnel=True, headless=Fal
     
     # Add screencast configuration if provided
     if screencast_path:
-        data["screencast_enabled"] = True
         data["screencast_path"] = screencast_path
 
     task_info = create_task(data)
@@ -219,17 +216,11 @@ def parse_proxy_string(proxy_str):
         return None
     
     try:
-        scheme, rest = proxy_str.split('://', 1)
-        if '@' in rest:
-            auth, host_port = rest.split('@', 1)
-            username, password = auth.split(':', 1)
-            host, port = host_port.split(':', 1)
-            return {"scheme": scheme, "host": host, "port": int(port), "username": username, "password": password}
-        else:
-            host, port = rest.split(':', 1)
-            return {"scheme": scheme, "host": host, "port": int(port)}
-    except (ValueError, AttributeError):
-        raise ValueError("Invalid proxy format. Use scheme://host:port or scheme://user:pass@host:port")
+        from cloudflyer.server import ProxyConfig
+        proxy_config = ProxyConfig.from_string(proxy_str)
+        return proxy_config.to_dict()
+    except ValueError as e:
+        raise ValueError(f"Invalid proxy format: {e}")
 
 def main_cli():
     parser = argparse.ArgumentParser(description="Challenge solver CLI")

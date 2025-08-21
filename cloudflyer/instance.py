@@ -30,9 +30,9 @@ COMMON_ARGUMENTS = [
     "-force-color-profile=srgb",
     "-metrics-recording-only",
     "-disable-background-mode",
-    "-enable-features=NetworkService,NetworkServiceInProcess,LoadCryptoTokenExtension,PermuteTLSExtensions",
-    "-disable-features=FlashDeprecationWarning,EnablePasswordsAccountStorage",
-    "-deny-permission-prompts",
+    # "-enable-features=NetworkService,NetworkServiceInProcess,LoadCryptoTokenExtension,PermuteTLSExtensions",
+    # "-disable-features=FlashDeprecationWarning,EnablePasswordsAccountStorage",
+    # "-deny-permission-prompts",
     "-disable-gpu",
     "-accept-lang=en-US",
     "--window-size=512,512",
@@ -591,21 +591,27 @@ class Instance:
                     time.sleep(2)
             elif task["type"] == "CloudflareChallenge":
                 try_count = 0
+                bypass_failed_reason = None
+                
                 while self.driver and (not cf_bypasser.is_bypassed()):
                     if 0 < cf_bypasser.max_retries + 1 <= try_count:
                         logger.info("Exceeded maximum retries. Bypass failed.")
+                        bypass_failed_reason = "max_retries"
                         break
                     if (datetime.now() - start_time).total_seconds() > timeout:
                         logger.info("Exceeded maximum time. Bypass failed.")
+                        bypass_failed_reason = "timeout"
                         break
                     logger.debug(f"Attempt {try_count + 1}: Verification page detected. Trying to bypass...")
                     cf_bypasser.click_verification_button()
                     try_count += 1
                     time.sleep(1)
+                
                 if cf_bypasser.is_bypassed():
                     logger.debug("Bypass successful.")
                 else:
                     logger.debug("Bypass failed.")
+                
                 cookies = {
                     cookie.get("name", ""): cookie.get("value", "")
                     for cookie in self.driver.cookies()
@@ -622,13 +628,22 @@ class Instance:
                     }
                 else:
                     response = {}
+                
                 if task.get('content', False):
                     content = self.driver.html
                     if len(content) < 30 * 1024 * 1024:
                         response["content"] = self.driver.html
+                
+                # Set appropriate error message based on failure reason
                 if not response:
                     response = None
-                    error = "No response, may be the url is not protected by cloudflare challenge, please retry later."
+                    if bypass_failed_reason == "timeout":
+                        elapsed_time = int((datetime.now() - start_time).total_seconds())
+                        error = f"Cloudflare bypass failed due to timeout after {elapsed_time} seconds. Consider increasing the timeout value."
+                    elif bypass_failed_reason == "max_retries":
+                        error = f"Cloudflare bypass failed after {cf_bypasser.max_retries} retries. The challenge may be too complex or network conditions poor."
+                    else:
+                        error = "No response, may be the url is not protected by cloudflare challenge, please retry later."
             else:
                 return {
                     "success": False,
