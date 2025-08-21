@@ -30,10 +30,8 @@ COMMON_ARGUMENTS = [
     "-force-color-profile=srgb",
     "-metrics-recording-only",
     "-disable-background-mode",
-    # "-enable-features=NetworkService,NetworkServiceInProcess,LoadCryptoTokenExtension,PermuteTLSExtensions",
-    # "-disable-features=FlashDeprecationWarning,EnablePasswordsAccountStorage",
-    # "-deny-permission-prompts",
-    "-disable-gpu",
+    "-disable-features=FlashDeprecationWarning,EnablePasswordsAccountStorage",
+    # "-disable-gpu",
     "-accept-lang=en-US",
     "--window-size=512,512",
     "--disable-infobars",
@@ -346,7 +344,8 @@ class Instance:
         options.set_paths(browser_path=self.browser_path)
         options.ignore_certificate_errors(True)
         if self.headless:
-            options.headless(True)
+            # Use modern headless mode for better Docker compatibility
+            options.set_argument("--headless=new")
         for argument in self.arguments:
             options.set_argument(argument)
         options.set_proxy(f"http://127.0.0.1:{self.mitm_port}")

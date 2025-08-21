@@ -7,9 +7,6 @@ No timeout limits, auto-close functionality, or automatic challenge solving.
 
 import argparse
 import logging
-import os
-from pathlib import Path
-from threading import Event
 import time
 
 import appdirs
