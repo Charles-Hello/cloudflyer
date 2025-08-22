@@ -623,14 +623,25 @@ class Instance:
                 
                 if cf_bypasser.is_bypassed():
                     logger.debug("Bypass successful.")
+                    # After bypass, poll up to 5 seconds for cf_clearance to appear
+                    poll_start = datetime.now()
+                    cf_clearance = ""
+                    while (datetime.now() - poll_start).total_seconds() < 5:
+                        cookies = {
+                            cookie.get("name", ""): cookie.get("value", "")
+                            for cookie in self.driver.cookies()
+                        }
+                        cf_clearance = cookies.get("cf_clearance", "")
+                        if cf_clearance:
+                            break
+                        time.sleep(0.1)
                 else:
                     logger.debug("Bypass failed.")
-                
-                cookies = {
-                    cookie.get("name", ""): cookie.get("value", "")
-                    for cookie in self.driver.cookies()
-                }
-                cf_clearance = cookies.get("cf_clearance", "")
+                    cookies = {
+                        cookie.get("name", ""): cookie.get("value", "")
+                        for cookie in self.driver.cookies()
+                    }
+                    cf_clearance = cookies.get("cf_clearance", "")
                 if cf_clearance:
                     response = {
                         "cookies": {
@@ -642,6 +653,10 @@ class Instance:
                     }
                 else:
                     response = {}
+                
+                content = self.driver.html
+                print(content)
+                print(cookies)
                 
                 if task.get('content', False):
                     content = self.driver.html

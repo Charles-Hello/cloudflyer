@@ -9,7 +9,6 @@ import argparse
 import logging
 import time
 
-import appdirs
 from DrissionPage import ChromiumPage, ChromiumOptions
 from DrissionPage.errors import PageDisconnectedError, BrowserConnectError
 
